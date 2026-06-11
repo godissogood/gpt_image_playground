@@ -1190,7 +1190,7 @@ export const useStore = create<AppState>()(
             confirmText: '去设置',
             cancelText: '取消',
             action: () => {
-              useStore.getState().setShowSettings(true, 'api')
+              useStore.getState().setShowSettings(true, 'agent')
             },
           })
           return
@@ -1202,7 +1202,7 @@ export const useStore = create<AppState>()(
           confirmText: '去设置',
           cancelText: '取消',
           action: () => {
-            useStore.getState().setShowSettings(true, 'api')
+            useStore.getState().setShowSettings(true, 'agent')
           },
         })
       },
@@ -1674,7 +1674,7 @@ function putTask(task: TaskRecord): Promise<IDBValidKey> {
 }
 
 export function getCodexCliPromptKey(settings: AppSettings): string {
-  const profile = getActiveApiProfile(settings)
+  const profile = getImageApiProfile(settings)
   return `${profile.baseUrl}\n${profile.apiKey}`
 }
 
@@ -4485,7 +4485,7 @@ export async function deleteFavoriteCollection(collectionId: string, deleteTasks
 /** 重试失败的任务：创建新任务并执行 */
 export async function retryTask(task: TaskRecord) {
   const { settings } = useStore.getState()
-  const activeProfile = getActiveApiProfile(settings)
+  const activeProfile = getImageApiProfile(settings)
   const normalizedParams = normalizeParamsForSettings(task.params, settings, { hasInputImages: task.inputImageIds.length > 0 })
   const shouldUseTransparentOutput = normalizedParams.output_format === 'png' && normalizedParams.transparent_output
   const taskParams = shouldUseTransparentOutput
