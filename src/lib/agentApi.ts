@@ -747,6 +747,67 @@ export async function callAgentConversationTitleApi(opts: {
   }
 }
 
+export async function callImageToPromptApi(opts: {
+  settings: AppSettings
+  profile: ApiProfile
+  imageDataUrl: string
+  signal?: AbortSignal
+}): Promise<string> {
+  const { settings, profile, imageDataUrl, signal } = opts
+  const proxyConfig = readClientDevProxyConfig()
+  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const abortFromCaller = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
+
+  try {
+    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+      method: 'POST',
+      headers: createHeaders(profile),
+      cache: 'no-store',
+      body: JSON.stringify({
+        model: profile.model || settings.model,
+        input: [{
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: [
+                '请根据这张图片，生成一段适合再次创作的中文提示词。',
+                '要求：',
+                '1. 只输出可直接复用的中文提示词正文。',
+                '2. 不要输出解释、前后缀、标题、编号、Markdown。',
+                '3. 不要输出 4k、8k、ar 之类参数尾巴。',
+                '4. 重点描述人物、服装、姿态、构图、光线、场景、风格。',
+              ].join('\n'),
+            },
+            {
+              type: 'input_image',
+              image_url: imageDataUrl,
+            },
+          ],
+        }],
+        max_output_tokens: 500,
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response))
+    }
+
+    const payload = await response.json() as ResponsesApiResponse
+    const text = extractText(payload).trim()
+    if (!text) throw new Error('接口没有返回可用的反推提示词')
+    return text
+  } finally {
+    clearTimeout(timeoutId)
+    signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Batch image generation: execute a single image via Responses API
 // Uses the same pattern as gallery Responses API mode:

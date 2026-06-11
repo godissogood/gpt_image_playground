@@ -2,7 +2,7 @@ import { useRef, useEffect, useCallback, useState, useMemo, useLayoutEffect, typ
 import { createPortal } from 'react-dom'
 import { ALL_FAVORITES_COLLECTION_ID, deleteFavoriteCollection, getTaskFavoriteCollectionIds, useStore, submitTask, submitAgentMessage, stopAgentResponse, addImageFromFile, createInputImageFromFile, deleteImageIfUnreferenced, removeMultipleTasks, getCachedImage, ensureImageCached, getActiveAgentRounds, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import { DEFAULT_PARAMS, type TaskRecord } from '../types'
-import { getAssistantApiProfile, getImageApiProfile, normalizeSettings } from '../lib/apiProfiles'
+import { getAssistantApiProfile, getImageApiProfile, normalizeSettings, validateApiProfile } from '../lib/apiProfiles'
 import { DEFAULT_FAL_IMAGE_SIZE, getChangedParams, getOutputImageLimitForSettings, normalizeParamsForSettings } from '../lib/paramCompatibility'
 import { getAtImageQuery, getImageMentionLabel, getPromptIndexFromVisibleIndex, getPromptMentionParts, getSelectedImageMentionLabel, getSelectedTextMentionLabel, imageMentionMatches, insertImageMentionAtVisibleRange, insertTextMentionAtVisibleRange, isCursorInSelectedImageMention, stripImageMentionMarkers } from '../lib/promptImageMentions'
 import { normalizeImageSize } from '../lib/size'
@@ -10,6 +10,7 @@ import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { getSafeBoundingClientRect } from '../lib/domRect'
 import { collectAgentRoundOutputImageSlots } from '../lib/agentImageReferences'
+import { callImageToPromptApi } from '../lib/agentApi'
 import { useHintTooltip } from '../hooks/useHintTooltip'
 import { useTooltip } from '../hooks/useTooltip'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getTaskOutputImageZipEntries } from '../lib/downloadImages'
@@ -679,6 +680,9 @@ export default function InputBar() {
   const [atImageMenuIndex, setAtImageMenuIndex] = useState(0)
   const [atImageMenuDismissed, setAtImageMenuDismissed] = useState(false)
   const [touchDragPreview, setTouchDragPreview] = useState<{ src: string; x: number; y: number } | null>(null)
+  const [isReversePrompting, setIsReversePrompting] = useState(false)
+  const [reversePromptResult, setReversePromptResult] = useState('')
+  const [reversePromptSourceId, setReversePromptSourceId] = useState<string | null>(null)
   const handleRef = useRef<HTMLDivElement>(null)
   const dragTouchRef = useRef({ startY: 0, moved: false })
   const suppressHandleClickUntilRef = useRef(0)
@@ -896,6 +900,44 @@ export default function InputBar() {
     }
     setMaskEditorImageId(targetImage.id)
   }, [inputImages, maskTargetImage, openImageToImageUpload, setMaskEditorImageId])
+  const handleReversePrompt = useCallback(async (img: (typeof inputImages)[number]) => {
+    try {
+      setIsReversePrompting(true)
+      setReversePromptSourceId(img.id)
+      const profile = getAssistantApiProfile(settings)
+      const normalizedSettings = normalizeSettings(settings)
+      if (validateApiProfile(profile)) {
+        showToast(`请先完善辅助接口配置：${validateApiProfile(profile)}`, 'error')
+        useStore.getState().setShowSettings(true, 'agent')
+        return
+      }
+      const result = await callImageToPromptApi({
+        settings: normalizedSettings,
+        profile,
+        imageDataUrl: img.dataUrl,
+      })
+      setReversePromptResult(result)
+    } catch (err) {
+      showToast(`反推提示词失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+      setReversePromptSourceId(null)
+    } finally {
+      setIsReversePrompting(false)
+    }
+  }, [settings, showToast])
+  const closeReversePromptModal = useCallback(() => {
+    setReversePromptSourceId(null)
+    setReversePromptResult('')
+    setIsReversePrompting(false)
+  }, [])
+  const applyReversePromptReplace = useCallback(() => {
+    setPrompt(reversePromptResult.trim())
+    closeReversePromptModal()
+  }, [closeReversePromptModal, reversePromptResult, setPrompt])
+  const applyReversePromptAppend = useCallback(() => {
+    const next = prompt.trim() ? `${prompt.trim()}\n\n${reversePromptResult.trim()}` : reversePromptResult.trim()
+    setPrompt(next)
+    closeReversePromptModal()
+  }, [closeReversePromptModal, prompt, reversePromptResult, setPrompt])
   const cursorPosition = cursorPos
   const visiblePrompt = stripImageMentionMarkers(prompt)
   const agentOutputImageOptions = useMemo<AtImageOption[]>(() => {
@@ -1944,6 +1986,19 @@ export default function InputBar() {
             </svg>
           </span>
         )}
+        {!isMaskTarget && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              void handleReversePrompt(img)
+            }}
+            className="absolute left-1 bottom-1 rounded bg-white/90 px-1.5 py-0.5 text-[10px] font-medium text-gray-700 shadow-sm opacity-0 transition-opacity hover:bg-white group-hover:opacity-100 z-30 dark:bg-gray-900/90 dark:text-gray-200"
+            title="反推提示词"
+          >
+            反推
+          </button>
+        )}
       </div>
     )
   }
@@ -2285,6 +2340,47 @@ export default function InputBar() {
           onClose={() => setShowSizePicker(false)}
           allowAuto={!isFalTextToImage}
         />
+      )}
+
+      {reversePromptSourceId && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm" onClick={closeReversePromptModal}>
+          <div className="w-full max-w-2xl rounded-3xl bg-white p-5 shadow-2xl dark:bg-gray-900" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-base font-bold text-gray-800 dark:text-gray-100">反推提示词结果</h3>
+              <button
+                type="button"
+                onClick={closeReversePromptModal}
+                className="rounded-full p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/[0.06] dark:hover:text-gray-200"
+              >
+                <CloseIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <textarea
+              value={isReversePrompting ? '正在分析图片，请稍候...' : reversePromptResult}
+              onChange={(e) => setReversePromptResult(e.target.value)}
+              disabled={isReversePrompting}
+              className="min-h-[240px] w-full resize-none rounded-2xl border border-gray-200/70 bg-white/70 px-4 py-3 text-sm leading-relaxed text-gray-700 outline-none transition focus:border-blue-300 dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200 dark:focus:border-blue-500/50"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={applyReversePromptAppend}
+                disabled={isReversePrompting || !reversePromptResult.trim()}
+                className="rounded-xl bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-200 disabled:opacity-50 dark:bg-white/[0.06] dark:text-gray-300 dark:hover:bg-white/[0.1]"
+              >
+                追加到提示词
+              </button>
+              <button
+                type="button"
+                onClick={applyReversePromptReplace}
+                disabled={isReversePrompting || !reversePromptResult.trim()}
+                className="rounded-xl bg-blue-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-600 disabled:opacity-50"
+              >
+                替换提示词
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div data-input-bar className="fixed bottom-4 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 w-full max-w-4xl px-3 sm:px-4 transition-all duration-300">
