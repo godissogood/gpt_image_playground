@@ -4589,7 +4589,7 @@ export async function reuseConfig(task: TaskRecord) {
   )
 }
 
-/** 编辑输出：将输出图加入输入 */
+/** 继续图生图：将输出图加入输入 */
 export async function editOutputs(task: TaskRecord) {
   const { inputImages, addInputImage, showToast } = useStore.getState()
   if (!task.outputImages?.length) return
@@ -4603,7 +4603,7 @@ export async function editOutputs(task: TaskRecord) {
       added++
     }
   }
-  showToast(`已添加 ${added} 张输出图到输入`, 'success')
+  showToast(added > 0 ? `已添加 ${added} 张图片到参考图，可继续图生图` : '这些图片已在当前参考图中', added > 0 ? 'success' : 'info')
 }
 
 /** 删除多条任务 */

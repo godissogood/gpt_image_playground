@@ -2,3 +2,6 @@ node_modules/
 dist/
 dev-proxy.config.json
 .wrangler/
+.npm-cache/
+.codex-dev.out.log
+.codex-dev.err.log

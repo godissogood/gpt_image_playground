@@ -653,6 +653,7 @@ export default function InputBar() {
   }, [clearFavoriteCollectionSelection, favoriteCollections, selectedFavoriteCollectionIds, setConfirmDialog, showToast, tasks])
 
   const maskDraft = useStore((s) => s.maskDraft)
+  const clearMaskDraft = useStore((s) => s.clearMaskDraft)
   const setMaskEditorImageId = useStore((s) => s.setMaskEditorImageId)
   const moveInputImage = useStore((s) => s.moveInputImage)
 
@@ -751,13 +752,37 @@ export default function InputBar() {
   ), [activeProfile.id, currentActiveProfile.id, settings])
   const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
   const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig && !activeAgentIsRunning)
+  const generationMode = maskDraft ? 'inpaint' : inputImages.length > 0 ? 'img2img' : 'txt2img'
+  const generationModeLabel = generationMode === 'inpaint'
+    ? '局部重绘'
+    : generationMode === 'img2img'
+    ? '图生图'
+    : '文生图'
+  const generationModeDescription = generationMode === 'inpaint'
+    ? '基于参考图和遮罩，只修改选中区域。'
+    : generationMode === 'img2img'
+    ? '基于参考图和提示词继续生成。'
+    : '只根据提示词直接生成新图片。'
   const submitButtonAriaLabel = activeAgentIsRunning
     ? '停止生成'
     : hasSubmitApiConfig
-    ? maskDraft ? '遮罩编辑' : '生成图像'
+    ? `开始${generationModeLabel}`
     : '请先配置 API'
-  const submitTooltipText = activeAgentIsRunning ? '停止生成' : '尚未完成 API 配置，请在右上角设置中进行'
-  const promptPlaceholder = '描述你想生成的图片，可输入 @ 来指定参考图...'
+  const submitButtonText = activeAgentIsRunning
+    ? '停止生成'
+    : !hasSubmitApiConfig
+    ? '配置接口'
+    : `开始${generationModeLabel}`
+  const submitTooltipText = activeAgentIsRunning
+    ? '停止生成'
+    : !hasSubmitApiConfig
+    ? '尚未完成 API 配置，请在右上角设置中进行'
+    : generationModeDescription
+  const promptPlaceholder = generationMode === 'inpaint'
+    ? '描述你想局部重绘的内容，遮罩区域会优先被修改...'
+    : generationMode === 'img2img'
+    ? '描述你想基于参考图生成的结果，可输入 @ 来指定参考图...'
+    : '描述你想生成的图片，可输入 @ 来指定参考图...'
   const submitCurrentMode = useCallback(() => {
     if (appMode === 'agent') {
       void submitAgentMessage()
@@ -812,7 +837,11 @@ export default function InputBar() {
         { label: 'high', value: 'high' },
       ]
   const atImageLimit = inputImages.length >= API_MAX_IMAGES
-  const uploadImageTooltipText = atImageLimit ? `参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加` : '上传图片'
+  const uploadImageTooltipText = atImageLimit
+    ? `参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加`
+    : inputImages.length > 0
+    ? '继续添加参考图'
+    : '上传图片，开始图生图'
   const transparentOutputHint = useHintTooltip()
   const handleTransparentOutputMenuOpenChange = useCallback((open: boolean) => {
     if (open) transparentOutputHint.hide()
@@ -828,6 +857,42 @@ export default function InputBar() {
   const referenceImages = maskTargetImage
     ? inputImages.filter((img) => img.id !== maskTargetImage.id)
     : inputImages
+  const openImageToImageUpload = useCallback(() => {
+    if (atImageLimit) {
+      showToast(`参考图数量已达上限（${API_MAX_IMAGES} 张），无法继续添加`, 'error')
+      return
+    }
+    fileInputRef.current?.click()
+  }, [atImageLimit, showToast])
+  const switchToTextToImage = useCallback(() => {
+    if (generationMode === 'txt2img') return
+    setConfirmDialog({
+      title: '切回文生图',
+      message: maskDraft
+        ? '切回文生图会清空当前遮罩和全部参考图，是否继续？'
+        : `切回文生图会清空当前 ${inputImages.length} 张参考图，是否继续？`,
+      confirmText: '切回文生图',
+      cancelText: '取消',
+      action: () => clearInputImages(),
+    })
+  }, [clearInputImages, generationMode, inputImages.length, maskDraft, setConfirmDialog])
+  const switchToImageToImage = useCallback(() => {
+    if (generationMode === 'img2img') return
+    if (generationMode === 'inpaint') {
+      clearMaskDraft()
+      showToast('已切换到图生图，当前参考图已保留', 'success')
+      return
+    }
+    openImageToImageUpload()
+  }, [clearMaskDraft, generationMode, openImageToImageUpload, showToast])
+  const openQuickMaskEditor = useCallback(() => {
+    const targetImage = maskTargetImage ?? inputImages[0]
+    if (!targetImage) {
+      openImageToImageUpload()
+      return
+    }
+    setMaskEditorImageId(targetImage.id)
+  }, [inputImages, maskTargetImage, openImageToImageUpload, setMaskEditorImageId])
   const cursorPosition = cursorPos
   const visiblePrompt = stripImageMentionMarkers(prompt)
   const agentOutputImageOptions = useMemo<AtImageOption[]>(() => {
@@ -1921,6 +1986,50 @@ export default function InputBar() {
     )
   }
 
+  const renderGenerationModeBar = () => (
+    <div className="mb-3 flex flex-wrap items-center gap-2">
+      <span className="text-xs text-gray-400 dark:text-gray-500">模式</span>
+      <button
+        type="button"
+        onClick={switchToTextToImage}
+        className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+          generationMode === 'txt2img'
+            ? 'bg-blue-500 text-white shadow-sm'
+            : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08]'
+        }`}
+      >
+        文生图
+      </button>
+      <button
+        type="button"
+        onClick={switchToImageToImage}
+        className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+          generationMode === 'img2img'
+            ? 'bg-blue-500 text-white shadow-sm'
+            : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08]'
+        }`}
+      >
+        图生图
+      </button>
+      {inputImages.length > 0 && (
+        <button
+          type="button"
+          onClick={openQuickMaskEditor}
+          className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+            generationMode === 'inpaint'
+              ? 'bg-blue-500 text-white shadow-sm'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08]'
+          }`}
+        >
+          局部重绘
+        </button>
+      )}
+      <span className="text-xs text-gray-500 dark:text-gray-400">
+        {generationModeDescription}
+      </span>
+    </div>
+  )
+
   const renderParams = (cols: string) => (
     <div className={`grid ${cols} gap-2 text-xs flex-1`}>
       <label
@@ -2320,6 +2429,8 @@ export default function InputBar() {
             <div className={`w-10 h-1 rounded-full bg-gray-300 dark:bg-white/[0.06] transition-transform duration-200 ${mobileCollapsed ? 'scale-x-75' : ''}`} />
           </div>
 
+          {renderGenerationModeBar()}
+
           {/* 输入图片行（移动端可折叠） */}
           {inputImages.length > 0 && (
             isMobile ? (
@@ -2331,7 +2442,7 @@ export default function InputBar() {
                 </div>
                 {mobileCollapsed && (
                   <div className="text-xs text-gray-400 dark:text-gray-500 mb-2 ml-1">
-                    {maskDraft ? `1 张遮罩主图 · ${referenceImages.length} 张参考图` : `${inputImages.length} 张参考图`}
+                    {generationModeLabel} · {maskDraft ? `1 张遮罩主图 · ${referenceImages.length} 张参考图` : `${inputImages.length} 张参考图`}
                   </div>
                 )}
               </>
@@ -2451,7 +2562,7 @@ export default function InputBar() {
                 >
                   <ButtonTooltip visible={attachHover} text={uploadImageTooltipText} />
                   <button
-                    onClick={() => !atImageLimit && fileInputRef.current?.click()}
+                    onClick={() => openImageToImageUpload()}
                     className={`p-2.5 rounded-xl transition-all shadow-sm ${
                       atImageLimit
                         ? 'bg-gray-200 dark:bg-white/[0.04] text-gray-300 dark:text-gray-500 cursor-not-allowed'
@@ -2546,7 +2657,7 @@ export default function InputBar() {
                           className="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
                           onClick={() => {
                             setShowMobileUploadMenu(false)
-                            cameraInputRef.current?.click()
+                            if (!atImageLimit) cameraInputRef.current?.click()
                           }}
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2559,7 +2670,7 @@ export default function InputBar() {
                           className="w-full px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
                           onClick={() => {
                             setShowMobileUploadMenu(false)
-                            fileInputRef.current?.click()
+                            openImageToImageUpload()
                           }}
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2598,7 +2709,7 @@ export default function InputBar() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                       </svg>
                     )}
-                    {activeAgentIsRunning ? '停止生成' : maskDraft ? '遮罩编辑' : '生成图像'}
+                    {submitButtonText}
                   </button>
                 </div>
               </div>
