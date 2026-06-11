@@ -205,6 +205,40 @@ $env:VITE_DEFAULT_API_URL="https://api.openai.com/v1"; npm run deploy:cf
 </details>
 
 <details>
+<summary><strong>☁️ 方式二补充：Cloudflare Workers + API 代理（推荐给最终用户）</strong></summary>
+
+如果你希望前端托管在 Cloudflare，且浏览器不要直接跨域请求真实图片 API，可使用仓库内置的 Worker 代理方案。
+
+### 作用
+
+- 前端静态资源仍由 Cloudflare 托管
+- 浏览器统一请求同源 `/api-proxy/*`
+- Worker 再转发到你的真实 API，例如 `https://api.itoo.me/v1`
+- 设置页中的 **API 代理** 会默认开启并锁定
+
+### 需要配置的 Worker 变量
+
+在 Cloudflare Workers / Pages 项目中添加：
+
+- `API_PROXY_URL`：真实 API 基础地址，例如 `https://api.itoo.me/v1`
+- `VITE_DEFAULT_API_URL`：可留空，或填写你希望前端默认展示的地址
+
+### 部署命令
+
+```bash
+npm install
+npm run deploy:cf:proxy
+```
+
+### 推荐前端使用方式
+
+- Base URL 可留空（代理锁定开启时前端填写会被忽略）
+- 用户只填写自己的 API Key / 模型
+- 真实上游地址只保存在 Cloudflare Worker 的 `API_PROXY_URL`
+
+</details>
+
+<details>
 <summary><strong>🐳 方式三：Docker 部署</strong></summary>
 
 官方镜像已发布至 GitHub Container Registry。Docker 部署支持在运行时注入默认配置。
