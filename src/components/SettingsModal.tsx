@@ -4,9 +4,11 @@ import { normalizeBaseUrl } from '../lib/api'
 import { isApiProxyAvailable, isApiProxyLocked, readClientDevProxyConfig } from '../lib/devProxy'
 import { useStore, exportData, importData, clearData, type SettingsTab } from '../store'
 import {
+  createDefaultAssistantProfile,
   createDefaultOpenAIProfile,
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
+  DEFAULT_ASSISTANT_PROFILE_ID,
   DEFAULT_IMAGES_MODEL,
   DEFAULT_OPENAI_PROFILE_ID,
   DEFAULT_RESPONSES_MODEL,
@@ -14,6 +16,8 @@ import {
   findEquivalentApiProfile,
   getApiProviderLabel,
   getActiveApiProfile,
+  getAssistantApiProfile,
+  getImageApiProfile,
   importCustomProviderSettingsFromJson,
   isOpenAICompatibleProvider,
   mergeImportedSettings,
@@ -355,7 +359,9 @@ export default function SettingsModal() {
   const apiProxyConfig = readClientDevProxyConfig()
   const apiProxyAvailable = isApiProxyAvailable(apiProxyConfig)
   const apiProxyLocked = isApiProxyLocked(apiProxyConfig)
-  const activeProfile = draft.profiles.find((profile) => profile.id === draft.activeProfileId) ?? draft.profiles[0] ?? getActiveApiProfile(draft)
+  const imageProfile = draft.profiles.find((profile) => profile.id === draft.imageProfileId) ?? getImageApiProfile(draft)
+  const assistantProfile = draft.profiles.find((profile) => profile.id === draft.assistantProfileId) ?? getAssistantApiProfile(draft)
+  const activeProfile = activeTab === 'agent' ? assistantProfile : imageProfile
   const activeProviderIsOpenAICompatible = isOpenAICompatibleProvider(draft, activeProfile.provider)
   const activeProviderUsesApiUrl = activeProviderIsOpenAICompatible || activeProfile.provider === 'fal'
   const activeCustomProvider = draft.customProviders.find((provider) => provider.id === activeProfile.provider)

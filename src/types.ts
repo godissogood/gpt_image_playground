@@ -110,6 +110,8 @@ export interface AppSettings {
   agentMathFormattingPrompt: boolean
   profiles: ApiProfile[]
   activeProfileId: string
+  imageProfileId?: string
+  assistantProfileId?: string
 }
 
 // ===== 任务参数 =====

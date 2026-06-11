@@ -18,7 +18,7 @@ import type {
   ResponsesOutputItem,
 } from './types'
 import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_PARAMS } from './types'
-import { DEFAULT_SETTINGS, getActiveApiProfile, getCustomProviderDefinition, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
+import { DEFAULT_SETTINGS, getActiveApiProfile, getAssistantApiProfile, getCustomProviderDefinition, getImageApiProfile, mergeImportedSettings, normalizeSettings, validateApiProfile } from './lib/apiProfiles'
 import { dismissAllTooltips } from './lib/tooltipDismiss'
 import { remapImageMentionsForOrder, replaceImageMentionsForApi } from './lib/promptImageMentions'
 import {
@@ -1166,7 +1166,7 @@ export const useStore = create<AppState>()(
 
         const state = get()
         const settings = normalizeSettings(state.settings)
-        const activeProfile = getActiveApiProfile(settings)
+        const activeProfile = getAssistantApiProfile(settings)
 
         if (activeProfile.provider === 'openai' && activeProfile.apiMode === 'responses') {
           const galleryInputDraft = saveGalleryInputDraft(state)
@@ -1186,7 +1186,7 @@ export const useStore = create<AppState>()(
         if (activeProfile.provider === 'openai' && activeProfile.apiMode !== 'responses') {
           state.setConfirmDialog({
             title: '需要 Responses API 配置',
-            message: `当前配置「${activeProfile.name}」使用的是 Images API，仅支持生成图片，无 Agent 模式需要的对话能力。\n\n请前往 API 配置页，将当前配置调整为 Responses API，或切换/新建一个支持 Responses API 的配置。`,
+            message: `当前辅助接口配置「${activeProfile.name}」使用的不是 Responses API，无法提供 Agent 模式需要的对话能力。\n\n请前往辅助接口页，将当前配置调整为 Responses API。`,
             confirmText: '去设置',
             cancelText: '取消',
             action: () => {
@@ -1198,7 +1198,7 @@ export const useStore = create<AppState>()(
 
         state.setConfirmDialog({
           title: '配置不支持 Agent 模式',
-          message: `当前配置「${activeProfile.name}」所属的服务商暂不支持 Agent 模式。Agent 模式需要使用支持 Responses API 的 OpenAI 配置。\n\n请前往 API 配置页，切换或新建一个支持 Responses API 的配置。`,
+          message: `当前辅助接口配置「${activeProfile.name}」暂不支持 Agent 模式。请前往辅助接口页，使用支持 Responses API 的 OpenAI 配置。`,
           confirmText: '去设置',
           cancelText: '取消',
           action: () => {
@@ -2258,7 +2258,7 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     useStore.getState()
 
   const normalizedSettings = normalizeSettings(settings)
-  let activeProfile = getActiveApiProfile(settings)
+  let activeProfile = getImageApiProfile(settings)
   let requestSettings = createSettingsForApiProfile(normalizedSettings, activeProfile)
   if (normalizedSettings.reuseTaskApiProfileTemporarily && (reusedTaskApiProfileId || reusedTaskApiProfileMissing)) {
     const reusedProfile = getReusedTaskApiProfile(normalizedSettings, reusedTaskApiProfileId)
@@ -3160,7 +3160,7 @@ export async function submitAgentMessage() {
   const state = useStore.getState()
   const { settings, prompt, inputImages, maskDraft, params, showToast } = state
   const normalizedSettings = normalizeSettings(settings)
-  const activeProfile = getActiveApiProfile(normalizedSettings)
+  const activeProfile = getAssistantApiProfile(normalizedSettings)
 
   if (activeProfile.provider !== 'openai' || activeProfile.apiMode !== 'responses') {
     state.setAppMode('agent')
@@ -3311,7 +3311,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
   const state = useStore.getState()
   const { settings, params, showToast } = state
   const normalizedSettings = normalizeSettings(settings)
-  const activeProfile = getActiveApiProfile(normalizedSettings)
+  const activeProfile = getAssistantApiProfile(normalizedSettings)
 
   if (activeProfile.provider !== 'openai' || activeProfile.apiMode !== 'responses') {
     state.setAppMode('agent')

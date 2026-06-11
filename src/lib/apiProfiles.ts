@@ -29,6 +29,7 @@ export const DEFAULT_RESPONSES_MODEL = 'gpt-5.5'
 export const DEFAULT_FAL_BASE_URL = 'https://fal.run'
 export const DEFAULT_FAL_MODEL = 'openai/gpt-image-2'
 export const DEFAULT_OPENAI_PROFILE_ID = 'default-openai'
+export const DEFAULT_ASSISTANT_PROFILE_ID = 'default-assistant'
 export const DEFAULT_API_TIMEOUT = 600
 
 const BUILT_IN_PROVIDER_IDS = new Set<ApiProvider>(['openai', 'fal'])
@@ -312,6 +313,17 @@ export function createDefaultOpenAIProfile(overrides: Partial<ApiProfile> = {}):
   }
 }
 
+export function createDefaultAssistantProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
+  return createDefaultOpenAIProfile({
+    id: DEFAULT_ASSISTANT_PROFILE_ID,
+    name: '辅助接口',
+    apiMode: 'responses',
+    model: DEFAULT_RESPONSES_MODEL,
+    streamImages: true,
+    ...overrides,
+  })
+}
+
 export function createDefaultFalProfile(overrides: Partial<ApiProfile> = {}): ApiProfile {
   return {
     id: `fal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -496,13 +508,30 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     streamImages: typeof record.streamImages === 'boolean' ? record.streamImages : undefined,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages),
   })
-  const profiles = Array.isArray(record.profiles) && record.profiles.length
+  const rawProfiles = Array.isArray(record.profiles) && record.profiles.length
     ? record.profiles.map((profile) => normalizeApiProfile(profile, undefined, customProviderIds))
     : [legacyProfile]
-  const activeProfileId = typeof record.activeProfileId === 'string' && profiles.some((p) => p.id === record.activeProfileId)
+  const profiles = dedupeApiProfiles(rawProfiles)
+  const ensuredProfiles = profiles.some((profile) => profile.id === DEFAULT_ASSISTANT_PROFILE_ID)
+    ? profiles
+    : [...profiles, createDefaultAssistantProfile({
+      baseUrl: profiles[0]?.baseUrl ?? legacyProfile.baseUrl,
+      apiKey: profiles[0]?.apiKey ?? legacyProfile.apiKey,
+      timeout: profiles[0]?.timeout ?? legacyProfile.timeout,
+      apiProxy: profiles[0]?.apiProxy ?? legacyProfile.apiProxy,
+    })]
+  const activeProfileId = typeof record.activeProfileId === 'string' && ensuredProfiles.some((p) => p.id === record.activeProfileId)
     ? record.activeProfileId
-    : profiles[0].id
-  const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
+    : ensuredProfiles[0].id
+  const active = ensuredProfiles.find((p) => p.id === activeProfileId) ?? ensuredProfiles[0]
+  const imageProfileId = typeof record.imageProfileId === 'string' && ensuredProfiles.some((p) => p.id === record.imageProfileId)
+    ? record.imageProfileId
+    : ensuredProfiles.find((p) => p.apiMode === 'images')?.id ?? activeProfileId
+  const assistantProfileId = typeof record.assistantProfileId === 'string' && ensuredProfiles.some((p) => p.id === record.assistantProfileId)
+    ? record.assistantProfileId
+    : ensuredProfiles.find((p) => p.id === DEFAULT_ASSISTANT_PROFILE_ID)?.id
+      ?? ensuredProfiles.find((p) => p.apiMode === 'responses')?.id
+      ?? activeProfileId
 
   return {
     baseUrl: active.baseUrl,
@@ -528,8 +557,10 @@ export function normalizeSettings(input: Partial<AppSettings> | unknown): AppSet
     agentMaxToolRounds: normalizeAgentMaxToolRounds(record.agentMaxToolRounds),
     agentWebSearch: typeof record.agentWebSearch === 'boolean' ? record.agentWebSearch : false,
     agentMathFormattingPrompt: typeof record.agentMathFormattingPrompt === 'boolean' ? record.agentMathFormattingPrompt : true,
-    profiles,
+    profiles: ensuredProfiles,
     activeProfileId,
+    imageProfileId,
+    assistantProfileId,
   }
 }
 
@@ -628,6 +659,22 @@ export function getActiveApiProfile(settings: Partial<AppSettings> | unknown): A
     streamImages: profile.provider === 'openai' && typeof record.streamImages === 'boolean' ? record.streamImages : profile.streamImages,
     streamPartialImages: normalizeStreamPartialImages(record.streamPartialImages, profile.streamPartialImages),
   }
+}
+
+export function getImageApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
+  const normalized = normalizeSettings(settings)
+  return normalized.profiles.find((p) => p.id === normalized.imageProfileId)
+    ?? normalized.profiles.find((p) => p.apiMode === 'images')
+    ?? normalized.profiles[0]
+    ?? createDefaultOpenAIProfile()
+}
+
+export function getAssistantApiProfile(settings: Partial<AppSettings> | unknown): ApiProfile {
+  const normalized = normalizeSettings(settings)
+  return normalized.profiles.find((p) => p.id === normalized.assistantProfileId)
+    ?? normalized.profiles.find((p) => p.apiMode === 'responses')
+    ?? normalized.profiles[0]
+    ?? createDefaultAssistantProfile()
 }
 
 export function validateApiProfile(profile: ApiProfile): string | null {
