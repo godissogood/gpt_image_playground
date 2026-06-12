@@ -763,32 +763,40 @@ export async function callImageToPromptApi(opts: {
   signal?.addEventListener('abort', abortFromCaller, { once: true })
 
   try {
-    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+    const response = await fetch(buildApiUrl(profile.baseUrl, 'chat/completions', proxyConfig, useApiProxy), {
       method: 'POST',
       headers: createHeaders(profile),
       cache: 'no-store',
       body: JSON.stringify({
         model: profile.model || settings.model,
-        input: [{
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: [
-                '请根据这张图片，生成一段适合再次创作的中文提示词。',
-                '要求：',
-                '1. 只输出可直接复用的中文提示词正文。',
-                '2. 不要输出解释、前后缀、标题、编号、Markdown。',
-                '3. 不要输出 4k、8k、ar 之类参数尾巴。',
-                '4. 重点描述人物、服装、姿态、构图、光线、场景、风格。',
-              ].join('\n'),
-            },
-            {
-              type: 'input_image',
-              image_url: imageDataUrl,
-            },
-          ],
-        }],
+        messages: [
+          {
+            role: 'system',
+            content: '你是一个提示词分析助手。请根据用户提供的图片，输出一段可直接复用的中文提示词。',
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: {
+                  url: imageDataUrl,
+                },
+              },
+              {
+                type: 'text',
+                text: [
+                  '请根据这张图片，生成一段适合再次创作的中文提示词。',
+                  '要求：',
+                  '1. 只输出可直接复用的中文提示词正文。',
+                  '2. 不要输出解释、前后缀、标题、编号、Markdown。',
+                  '3. 不要输出 4k、8k、ar 之类参数尾巴。',
+                  '4. 重点描述人物、服装、姿态、构图、光线、场景、风格。',
+                ].join('\n'),
+              },
+            ],
+          },
+        ],
         max_output_tokens: 500,
       }),
       signal: controller.signal,
@@ -798,8 +806,22 @@ export async function callImageToPromptApi(opts: {
       throw new Error(await getApiErrorMessage(response))
     }
 
-    const payload = await response.json() as ResponsesApiResponse
-    const text = extractText(payload).trim()
+    const payload = await response.json() as {
+      choices?: Array<{
+        message?: {
+          content?: string | Array<{ type?: string; text?: string }>
+        }
+      }>
+    }
+    const messageContent = payload.choices?.[0]?.message?.content
+    const text = Array.isArray(messageContent)
+      ? messageContent
+        .map((item) => typeof item?.text === 'string' ? item.text : '')
+        .join('\n')
+        .trim()
+      : typeof messageContent === 'string'
+      ? messageContent.trim()
+      : ''
     if (!text) throw new Error('接口没有返回可用的反推提示词')
     return text
   } finally {
