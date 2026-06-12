@@ -1955,6 +1955,50 @@ function mapActualParamsByImage(outputIds: string[], paramsList: Array<Partial<T
   return mapped && Object.keys(mapped).length > 0 ? mapped : undefined
 }
 
+function appendTaskOutputImage(taskId: string, imageId: string, actualParams?: Partial<TaskParams>, revisedPrompt?: string, rawImageUrl?: string) {
+  const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
+  if (!latestTask || latestTask.status !== 'running') return
+  if (latestTask.outputImages.includes(imageId)) return
+
+  const outputImages = [...latestTask.outputImages, imageId]
+  const actualParamsByImage = actualParams && hasActualParams(actualParams)
+    ? { ...(latestTask.actualParamsByImage ?? {}), [imageId]: actualParams }
+    : latestTask.actualParamsByImage
+  const revisedPromptByImage = revisedPrompt?.trim()
+    ? { ...(latestTask.revisedPromptByImage ?? {}), [imageId]: revisedPrompt.trim() }
+    : latestTask.revisedPromptByImage
+  const rawImageUrls = rawImageUrl
+    ? [...new Set([...(latestTask.rawImageUrls ?? []), rawImageUrl])]
+    : latestTask.rawImageUrls
+  const outputErrors = latestTask.outputErrors?.length ? latestTask.outputErrors : undefined
+
+  updateTaskInStore(taskId, {
+    outputImages,
+    actualParamsByImage,
+    revisedPromptByImage,
+    rawImageUrls,
+    actualParams: firstActualParams(actualParamsByImage ? outputImages.map((id) => actualParamsByImage[id]) : undefined) ?? latestTask.actualParams,
+    status: 'running',
+    outputErrors,
+  })
+}
+
+function appendTaskOutputError(taskId: string, requestIndex: number, error: string) {
+  const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
+  if (!latestTask || latestTask.status !== 'running') return
+
+  const existing = latestTask.outputErrors ?? []
+  const next = [
+    ...existing.filter((item) => item.requestIndex !== requestIndex),
+    { requestIndex, error },
+  ].sort((a, b) => a.requestIndex - b.requestIndex)
+
+  updateTaskInStore(taskId, {
+    outputErrors: next,
+    status: 'running',
+  })
+}
+
 async function readImageSizeParam(dataUrl: string): Promise<Partial<TaskParams> | undefined> {
   if (typeof Image === 'undefined') return undefined
 
@@ -4340,6 +4384,15 @@ async function executeTask(taskId: string) {
         useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex)
         void persistTaskStreamPartialImage(taskId, partial.image)
       },
+      onSingleImageSuccess: async ({ image, actualParams, revisedPrompt, rawImageUrl }) => {
+        if (!image) return
+        const imgId = await storeImage(image, 'generated')
+        cacheImage(imgId, image)
+        appendTaskOutputImage(taskId, imgId, actualParams, revisedPrompt, rawImageUrl)
+      },
+      onSingleImageFailure: ({ requestIndex, error }) => {
+        appendTaskOutputError(taskId, requestIndex, error)
+      },
     })
 
     const latestBeforeSuccess = useStore.getState().tasks.find((t) => t.id === taskId)
@@ -4348,10 +4401,30 @@ async function executeTask(taskId: string) {
       return
     }
 
-    // 存储输出图片
-    const { outputIds, outputDataUrls, transparentOriginalImageIds } = await storeTaskOutputImages(task, result.images)
+    const currentTaskBeforeFinalize = useStore.getState().tasks.find((t) => t.id === taskId) ?? task
+    const existingOutputIds = currentTaskBeforeFinalize.outputImages
+    let outputIds = existingOutputIds
+    let outputDataUrls: string[] = []
+    let transparentOriginalImageIds = currentTaskBeforeFinalize.transparentOriginalImages
+    if (result.images.length > existingOutputIds.length) {
+      const remainingImages = result.images.slice(existingOutputIds.length)
+      const stored = await storeTaskOutputImages(task, remainingImages)
+      outputIds = [...existingOutputIds, ...stored.outputIds]
+      outputDataUrls = stored.outputDataUrls
+      transparentOriginalImageIds = stored.transparentOriginalImageIds
+    } else if (existingOutputIds.length > 0) {
+      outputDataUrls = await Promise.all(
+        existingOutputIds.map(async (imageId) => {
+          const dataUrl = await ensureImageCached(imageId)
+          return dataUrl ?? ''
+        }),
+      )
+    }
+    outputDataUrls = outputDataUrls.filter(Boolean)
     const isAsyncCustomTask = taskProvider !== 'fal' && taskProvider !== 'openai' && Boolean(customTaskInfo)
-    const actualParamsList = taskProvider === 'fal'
+    const actualParamsList = outputDataUrls.length === 0
+      ? currentTaskBeforeFinalize.outputImages.map((imageId) => currentTaskBeforeFinalize.actualParamsByImage?.[imageId] ?? currentTaskBeforeFinalize.actualParams)
+      : taskProvider === 'fal'
       ? await resolveImageSizeParamsList(outputDataUrls, result.actualParamsList)
       : isAsyncCustomTask
       ? await readImageSizeParamsList(outputDataUrls)
@@ -4367,7 +4440,7 @@ async function executeTask(taskId: string) {
       const imgId = outputIds[index]
       if (imgId && revisedPrompt && revisedPrompt.trim()) acc[imgId] = revisedPrompt
       return acc
-    }, {}) : undefined
+    }, { ...(currentTaskBeforeFinalize.revisedPromptByImage ?? {}) }) : currentTaskBeforeFinalize.revisedPromptByImage
     const promptWasRevised = shouldStoreRevisedPrompts && result.revisedPrompts?.some(
       (revisedPrompt) => revisedPrompt?.trim() && revisedPrompt.trim() !== requestPrompt.trim(),
     )
@@ -4398,7 +4471,7 @@ async function executeTask(taskId: string) {
       actualParams,
       actualParamsByImage,
       revisedPromptByImage: revisedPromptByImage && Object.keys(revisedPromptByImage).length > 0 ? revisedPromptByImage : undefined,
-      status: 'done',
+      status: outputIds.length > 0 ? 'done' : 'error',
       finishedAt: Date.now(),
       elapsed: Date.now() - task.createdAt,
       falRecoverable: false,

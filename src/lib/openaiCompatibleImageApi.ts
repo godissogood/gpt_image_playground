@@ -506,12 +506,28 @@ async function callImagesApiConcurrent(opts: CallApiOptions, profile: ApiProfile
     },
   }
   const results = await Promise.allSettled(
-    Array.from({ length: n }).map((_, requestIndex) => callImagesApiSingle({
-      ...singleOpts,
-      onPartialImage: opts.onPartialImage
-        ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
-        : undefined,
-    }, profile)),
+    Array.from({ length: n }).map(async (_, requestIndex) => {
+      try {
+        const result = await callImagesApiSingle({
+          ...singleOpts,
+          onPartialImage: opts.onPartialImage
+            ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
+            : undefined,
+        }, profile)
+        const image = result.images[0]
+        await opts.onSingleImageSuccess?.({
+          image: image ?? '',
+          requestIndex,
+          actualParams: result.actualParamsList?.[0] ?? result.actualParams,
+          revisedPrompt: result.revisedPrompts?.[0],
+          rawImageUrl: result.rawImageUrls?.[0],
+        })
+        return result
+      } catch (err) {
+        await opts.onSingleImageFailure?.({ requestIndex, error: getErrorMessage(err) })
+        throw err
+      }
+    }),
   )
 
   const successfulResults = results
@@ -996,7 +1012,22 @@ async function callResponsesImageApi(opts: CallApiOptions, profile: ApiProfile):
     onPartialImage: opts.onPartialImage
       ? (partial) => opts.onPartialImage?.({ ...partial, requestIndex })
       : undefined,
-  }, profile))
+  }, profile)
+    .then(async (result) => {
+      const image = result.images[0]
+      await opts.onSingleImageSuccess?.({
+        image: image ?? '',
+        requestIndex,
+        actualParams: result.actualParamsList?.[0] ?? result.actualParams,
+        revisedPrompt: result.revisedPrompts?.[0],
+        rawImageUrl: result.rawImageUrls?.[0],
+      })
+      return result
+    })
+    .catch(async (err) => {
+      await opts.onSingleImageFailure?.({ requestIndex, error: getErrorMessage(err) })
+      throw err
+    }))
   const results = await Promise.allSettled(promises)
   
   const successfulResults = results

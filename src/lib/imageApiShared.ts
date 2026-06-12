@@ -19,6 +19,14 @@ export interface CallApiOptions {
   onFalRequestEnqueued?: (request: { requestId: string; endpoint: string }) => void
   onCustomTaskEnqueued?: (task: { taskId: string }) => void
   onPartialImage?: (partial: { image: string; partialImageIndex?: number; requestIndex?: number }) => void
+  onSingleImageSuccess?: (result: {
+    image: string
+    requestIndex: number
+    actualParams?: Partial<TaskParams>
+    revisedPrompt?: string
+    rawImageUrl?: string
+  }) => void | Promise<void>
+  onSingleImageFailure?: (result: { requestIndex: number; error: string }) => void | Promise<void>
 }
 
 export interface CallApiResult {
