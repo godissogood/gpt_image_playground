@@ -2294,6 +2294,25 @@ export async function submitTask(options: { allowFullMask?: boolean; useCurrentA
     return
   }
 
+  const requestedCount = params.n > 0 ? params.n : 1
+  const requiresStreamingForMultiImage =
+    activeProfile.provider === 'openai' &&
+    activeProfile.apiMode === 'images' &&
+    requestedCount > 1 &&
+    activeProfile.streamImages !== true
+  if (requiresStreamingForMultiImage) {
+    setConfirmDialog({
+      title: '多图生成需要开启流式输出',
+      message: '你当前一次要生成多张图片。为了兼容当前图片接口的批量请求方式，请先开启“流式输出”，系统会改为多次单图并发生成，结果会更稳定。',
+      confirmText: '去开启',
+      cancelText: '取消',
+      action: () => {
+        useStore.getState().setShowSettings(true, 'api')
+      },
+    })
+    return
+  }
+
   if (!prompt.trim()) {
     showToast('请输入提示词', 'error')
     return

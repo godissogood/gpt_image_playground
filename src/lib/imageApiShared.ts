@@ -1,4 +1,4 @@
-import type { AppSettings, TaskParams } from '../types'
+﻿import type { AppSettings, TaskParams } from '../types'
 
 export const MIME_MAP: Record<string, string> = {
   png: 'image/png',
@@ -116,6 +116,38 @@ export function maybeAppendStreamingHint(message: string, status: number, stream
   return appendStreamingUnsupportedHint(message)
 }
 
+function isHtmlErrorBody(body: string, contentType: string): boolean {
+  if (contentType.includes('text/html')) return true
+  return /^\s*<!doctype html\b/i.test(body) || /^\s*<html\b/i.test(body)
+}
+
+function getFriendlyHttpErrorMessage(status: number, body: string, contentType: string): string | null {
+  const normalizedBody = body.trim()
+  const lowerBody = normalizedBody.toLowerCase()
+  const htmlErrorBody = isHtmlErrorBody(normalizedBody, contentType)
+
+  if (
+    status === 524 ||
+    (htmlErrorBody && /error\s*524|a timeout occurred/.test(lowerBody) && lowerBody.includes('cloudflare'))
+  ) {
+    return '请求超时：Cloudflare 代理等待上游响应超过 120 秒，当前页面没有拿到接口结果。图片可能已在上游生成并扣费。请改用不经过 CDN 的直连 API 地址，或降低图片尺寸、质量后重试。'
+  }
+
+  if (
+    status === 408 ||
+    status === 504 ||
+    (htmlErrorBody && /gateway timeout|upstream timed out|timed out/.test(lowerBody))
+  ) {
+    return '请求超时：中转站或网关等太久了，页面没拿到图片结果。请先试试开启流式输出，或者降低图片尺寸、质量后再试。'
+  }
+
+  if (htmlErrorBody && status >= 500) {
+    return `接口返回了网页错误页（HTTP ${status}），不是正常的图片结果。一般是中转站、Cloudflare 或 Nginx 那一层出问题了，请先检查代理链路。`
+  }
+
+  return null
+}
+
 async function probeNoCorsReachability(url: string, timeoutMs = 8000): Promise<'opaque' | 'reachable' | 'failed'> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -177,7 +209,12 @@ export async function getApiErrorMessage(response: Response): Promise<string> {
     else if (errJson.message) errorMsg = errJson.message
   } catch {
     try {
-      errorMsg = await textResponse.text()
+      const text = await textResponse.text()
+      errorMsg = getFriendlyHttpErrorMessage(
+        response.status,
+        text,
+        (response.headers.get('content-type') || '').toLowerCase(),
+      ) || text
     } catch {
       /* ignore */
     }
@@ -208,3 +245,4 @@ export function mergeActualParams(...sources: Array<Partial<TaskParams> | undefi
   const merged = Object.assign({}, ...sources.filter((source) => source && Object.keys(source).length))
   return Object.keys(merged).length ? merged : undefined
 }
+

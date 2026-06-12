@@ -28,6 +28,8 @@ export interface AgentGenerateImageFunctionCall {
   prompt: string
 }
 
+const AGENT_PREFERRED_PROMPT_LANGUAGE_INSTRUCTION = 'Keep image-generation prompts in the user\'s main language by default. If the user writes in Chinese, output Chinese prompts unless the user explicitly asks for English.'
+
 const AGENT_IMAGE_INSTRUCTIONS = [
   'You are an image-generation assistant in a multi-turn gallery app.',
   '',
@@ -100,6 +102,7 @@ function createAgentInstructions(settings: AppSettings, imageSource: AgentImageS
     '- Call continue_generation ONLY when you have generated a prerequisite image and need another round to generate dependent images. Do NOT call it when the task is complete.',
     '- When web_search is available, use it only when current external information would improve the answer or the user asks for research/news/facts.',
     '- When the requested task is complete, stop calling tools and provide the final response.',
+    AGENT_PREFERRED_PROMPT_LANGUAGE_INSTRUCTION,
   ]
 
   if (settings.agentMathFormattingPrompt) instructions.push('', AGENT_MATH_FORMATTING_INSTRUCTIONS)
