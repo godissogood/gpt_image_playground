@@ -988,7 +988,7 @@ export async function callImageOcrApi(opts: {
     const payload = await response.json() as ResponsesApiResponse
     const text = extractText(payload)
     if (!text.trim()) return []
-    const parsed = JSON.parse(text) as { blocks?: unknown }
+    const parsed = parseJsonObjectFromText(text) as { blocks?: unknown }
     return Array.isArray(parsed.blocks) ? parsed.blocks as Array<{
       id: string
       text: string
@@ -1051,13 +1051,29 @@ export async function callTranslateTextBlocksApi(opts: {
     const payload = await response.json() as ResponsesApiResponse
     const text = extractText(payload)
     if (!text.trim()) return texts
-    const parsed = JSON.parse(text) as { translations?: unknown }
+    const parsed = parseJsonObjectFromText(text) as { translations?: unknown }
     return Array.isArray(parsed.translations)
       ? parsed.translations.map((item, index) => typeof item === 'string' && item.trim() ? item : texts[index] ?? '')
       : texts
   } finally {
     clearTimeout(timeoutId)
     signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+function parseJsonObjectFromText(text: string) {
+  const trimmed = text.trim()
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
+    if (fenced?.[1]) return JSON.parse(fenced[1])
+    const start = trimmed.indexOf('{')
+    const end = trimmed.lastIndexOf('}')
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1))
+    }
+    throw new Error('OCR/翻译接口没有返回可解析的 JSON 结果')
   }
 }
 
