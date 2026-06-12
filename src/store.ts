@@ -3136,6 +3136,61 @@ function countResponseToolCalls(output: ResponsesOutputItem[]) {
   return output.filter((item) => item.type === 'image_generation_call' || (item.type === 'function_call' && item.name === 'generate_image')).length
 }
 
+function normalizeChineseNumberToken(value: string): number | null {
+  const normalized = value.replace(/^0+/, '') || '0'
+  if (/^\d+$/.test(normalized)) {
+    const n = Number(normalized)
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+
+  const map: Record<string, number> = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10,
+  }
+  if (value === '十') return 10
+  if (/^[一二两三四五六七八九]十$/.test(value)) {
+    return (map[value[0]] ?? 0) * 10
+  }
+  if (/^十[一二两三四五六七八九]$/.test(value)) {
+    return 10 + (map[value[1]] ?? 0)
+  }
+  if (/^[一二两三四五六七八九]十[一二两三四五六七八九]$/.test(value)) {
+    return (map[value[0]] ?? 0) * 10 + (map[value[2]] ?? 0)
+  }
+  return map[value] ?? null
+}
+
+function extractRequestedAgentImageCount(prompt: string): number | null {
+  const text = prompt.replace(/\s+/g, '')
+  const patterns = [
+    /(?:生成|做|来|出|给我|帮我生成)(\d+|[零一二两三四五六七八九十]+)(?:张|个版本|版|幅|套)/,
+    /(\d+|[零一二两三四五六七八九十]+)(?:张|个版本|版|幅|套)/,
+  ]
+  for (const pattern of patterns) {
+    const match = text.match(pattern)
+    if (!match) continue
+    const value = normalizeChineseNumberToken(match[1])
+    if (value) return value
+  }
+  return null
+}
+
+function getAgentRoundGeneratedImageCount(round: AgentRound, tasks: TaskRecord[]) {
+  return round.outputTaskIds.reduce((count, taskId) => {
+    const task = tasks.find((item) => item.id === taskId)
+    return count + Math.max(1, task?.outputImages.length ?? 0)
+  }, 0)
+}
+
 function createAgentContinuationInputItem(newImageRefs: string[], toolCallsUsed: number, maxToolCalls: number) {
   const lines = [
     '[System] The app has saved your generated outputs and is continuing the same Agent turn.',
@@ -3255,6 +3310,8 @@ export async function submitAgentMessage() {
     showToast('请输入消息', 'error')
     return
   }
+
+  const requestedImageCount = extractRequestedAgentImageCount(trimmedPrompt)
 
   const conversation = getActiveAgentConversation()
   if (conversation.rounds.some((round) => round.status === 'running')) {
@@ -3381,7 +3438,7 @@ export async function submitAgentMessage() {
     void generateAgentConversationTitle(conversation.id, trimmedPrompt, inputImageIds, requestSettings, activeProfile, fallbackTitle)
   }
 
-  void executeAgentRound(conversation.id, roundId, normalizedParams, requestSettings, activeProfile)
+  void executeAgentRound(conversation.id, roundId, normalizedParams, requestSettings, activeProfile, requestedImageCount)
 }
 
 export async function regenerateAgentAssistantMessage(conversationId: string, roundId: string) {
@@ -3460,7 +3517,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
         : current.messages,
     }))
     state.setAgentEditingRoundId(null)
-    void executeAgentRound(conversationId, sourceRound.id, normalizedParams, requestSettings, activeProfile)
+  void executeAgentRound(conversationId, sourceRound.id, normalizedParams, requestSettings, activeProfile, extractRequestedAgentImageCount(sourceUserMessage.content))
     return
   }
 
@@ -3500,7 +3557,7 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
     messages: [...current.messages, newUserMessage],
   }))
   state.setAgentEditingRoundId(null)
-  void executeAgentRound(conversationId, newRoundId, normalizedParams, requestSettings, activeProfile)
+  void executeAgentRound(conversationId, newRoundId, normalizedParams, requestSettings, activeProfile, extractRequestedAgentImageCount(sourceUserMessage.content))
 }
 
 async function executeAgentRound(
@@ -3509,6 +3566,7 @@ async function executeAgentRound(
   params: TaskParams,
   requestSettings: AppSettings,
   activeProfile: ApiProfile,
+  requestedImageCount: number | null = null,
 ) {
   const startedAt = Date.now()
   const controller = new AbortController()
@@ -3687,6 +3745,13 @@ async function executeAgentRound(
     const agentImageSource = requestSettings.agentImageSource
     const imageProfile = getAgentImageProfile(requestSettings, agentImageSource)
     const imageRequestSettings = createSettingsForApiProfile(requestSettings, imageProfile)
+    const getRemainingImageBudget = () => {
+      if (!(requestedImageCount && requestedImageCount > 0)) return Number.POSITIVE_INFINITY
+      const latestConversation = useStore.getState().agentConversations.find((item) => item.id === conversationId)
+      const latestRound = latestConversation?.rounds.find((item) => item.id === roundId)
+      if (!latestRound) return requestedImageCount
+      return Math.max(0, requestedImageCount - getAgentRoundGeneratedImageCount(latestRound, useStore.getState().tasks))
+    }
     const maxToolCalls = Number.isFinite(requestSettings.agentMaxToolRounds)
       ? Math.max(1, Math.trunc(requestSettings.agentMaxToolRounds))
       : DEFAULT_AGENT_MAX_TOOL_ROUNDS
@@ -3734,6 +3799,10 @@ async function executeAgentRound(
     }
 
     const executeGenerateImageFunctionCall = async (functionCallItem: ResponsesOutputItem): Promise<string> => {
+      const remainingBudget = getRemainingImageBudget()
+      if (remainingBudget <= 0) {
+        return JSON.stringify({ status: 'skipped', reason: 'requested image count reached' })
+      }
       const parsed = parseGenerateImageCallArguments(functionCallItem.arguments ?? '')
       if (!parsed) {
         return JSON.stringify({ error: 'Invalid generate_image arguments' })
@@ -3801,14 +3870,22 @@ async function executeAgentRound(
       const callId = functionCallItem.call_id ?? ''
       const args = functionCallItem.arguments ?? ''
       const batchItems = parseBatchImageCallArguments(args)
+      const remainingBudget = getRemainingImageBudget()
+
+      if (remainingBudget <= 0) {
+        return JSON.stringify({ images: [], skipped: 'requested image count reached' })
+      }
 
       if (!batchItems || batchItems.length === 0) {
         return JSON.stringify({ error: 'Invalid or empty batch arguments' })
       }
 
+      const limitedBatchItems = batchItems.slice(0, remainingBudget)
+      const skippedBatchItems = batchItems.slice(remainingBudget)
+
       // Create task cards in model-provided order before starting network calls.
       const batchExecutionItems = []
-      for (const item of batchItems) {
+      for (const item of limitedBatchItems) {
         const referenceIds = uniqueIds(extractAgentReferenceIds(item.prompt))
         const references = await resolveReferenceImages(referenceIds)
         const batchToolCallId = genId()
@@ -3912,9 +3989,9 @@ async function executeAgentRound(
 
       // Build function_call_output
       const outputImages: Array<{ id: string; status: string; error?: string }> = []
-      for (let i = 0; i < batchItems.length; i++) {
+      for (let i = 0; i < limitedBatchItems.length; i++) {
         const settled = batchResults[i]
-        const batchItem = batchItems[i]
+        const batchItem = limitedBatchItems[i]
         if (settled.status === 'fulfilled') {
           const r = settled.value
           if (!r.image) {
@@ -3939,7 +4016,10 @@ async function executeAgentRound(
       const successCount = outputImages.filter((img) => img.status === 'done').length
       toolCallsUsed += successCount
 
-      return JSON.stringify({ images: outputImages })
+      return JSON.stringify({
+        images: outputImages,
+        ...(skippedBatchItems.length ? { skipped: skippedBatchItems.map((item) => item.id) } : {}),
+      })
     }
 
     while (true) {
@@ -3953,6 +4033,7 @@ async function executeAgentRound(
         input: apiInputForTurn,
         maskDataUrl,
         imageSource: agentImageSource,
+        requestedImageCount,
         signal: controller.signal,
         onTextDelta: shouldStreamAssistantMessage
           ? (delta) => {
@@ -4164,6 +4245,11 @@ async function executeAgentRound(
         updatedAt: Date.now(),
         rounds: current.rounds.map((item) => item.id === roundId ? { ...item, responseId: lastResponseId, responseOutput: accumulatedOutputItemsWithFunctionOutputs } : item),
       }))
+
+      if (getRemainingImageBudget() <= 0) {
+        reachedToolLimit = false
+        break
+      }
 
       if (toolCallsUsed >= maxToolCalls) {
         reachedToolLimit = true

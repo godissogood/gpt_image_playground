@@ -90,7 +90,11 @@ const AGENT_MATH_FORMATTING_INSTRUCTIONS = [
   '- Do not use LaTeX delimiters like `\\(...\\)` or `\\[...\\]` in visible assistant text.',
 ].join('\n')
 
-function createAgentInstructions(settings: AppSettings, imageSource: AgentImageSource = settings.agentImageSource) {
+function createAgentInstructions(
+  settings: AppSettings,
+  imageSource: AgentImageSource = settings.agentImageSource,
+  requestedImageCount?: number | null,
+) {
   const maxToolRounds = Number.isFinite(settings.agentMaxToolRounds)
     ? Math.max(1, Math.trunc(settings.agentMaxToolRounds))
     : DEFAULT_AGENT_MAX_TOOL_ROUNDS
@@ -104,6 +108,14 @@ function createAgentInstructions(settings: AppSettings, imageSource: AgentImageS
     '- When the requested task is complete, stop calling tools and provide the final response.',
     AGENT_PREFERRED_PROMPT_LANGUAGE_INSTRUCTION,
   ]
+
+  if (typeof requestedImageCount === 'number' && requestedImageCount > 0) {
+    instructions.push(
+      `- The user's requested final image count for this turn is exactly ${requestedImageCount}. Do not generate more than ${requestedImageCount} total images in this turn.`,
+      `- If you generate a prerequisite/base image, it counts toward the ${requestedImageCount}-image total.`,
+      '- For simple multi-image requests without explicit per-image dependencies, prefer generating the requested count in a single batch and do not add extra exploratory images.',
+    )
+  }
 
   if (settings.agentMathFormattingPrompt) instructions.push('', AGENT_MATH_FORMATTING_INSTRUCTIONS)
 
@@ -712,6 +724,7 @@ export async function callAgentResponsesApi(opts: {
   input: unknown
   maskDataUrl?: string
   imageSource?: AgentImageSource
+  requestedImageCount?: number | null
   signal?: AbortSignal
   onTextDelta?: (delta: string) => void
   onOutputItems?: (outputItems: ResponsesOutputItem[]) => void
@@ -720,7 +733,7 @@ export async function callAgentResponsesApi(opts: {
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>
   onImageToolFailed?: (event: AgentApiImageToolFailure) => void | Promise<void>
 }): Promise<AgentApiResult> {
-  const { settings, profile, params, input, maskDataUrl, imageSource = settings.agentImageSource, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed } = opts
+  const { settings, profile, params, input, maskDataUrl, imageSource = settings.agentImageSource, requestedImageCount, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
@@ -733,7 +746,7 @@ export async function callAgentResponsesApi(opts: {
   try {
     const body: Record<string, unknown> = {
       model: profile.model || settings.model,
-      instructions: createAgentInstructions(settings, imageSource),
+      instructions: createAgentInstructions(settings, imageSource, requestedImageCount),
       input,
       tools: createAgentTools(params, profile, settings, maskDataUrl, imageSource),
     }
