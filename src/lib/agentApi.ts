@@ -1,4 +1,4 @@
-import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type AgentImageSource, type ApiProfile, type AppSettings, type ResponsesApiResponse, type ResponsesOutputItem, type TaskParams } from '../types'
 import { buildApiUrl, readClientDevProxyConfig, shouldUseApiProxy } from './devProxy'
 import { appendStreamingFormatHint, maybeAppendStreamingHint, getApiErrorMessage, MIME_MAP, normalizeBase64Image, pickActualParams } from './imageApiShared'
 
@@ -21,6 +21,11 @@ export interface AgentApiResult {
   images: AgentApiResultImage[]
   outputItems: ResponsesApiResponse['output']
   rawResponsePayload?: string
+}
+
+export interface AgentGenerateImageFunctionCall {
+  id: string
+  prompt: string
 }
 
 const AGENT_IMAGE_INSTRUCTIONS = [
@@ -49,6 +54,32 @@ const AGENT_IMAGE_INSTRUCTIONS = [
   'Resolve user mentions ("the first image") to the matching id. Only use existing ids in image_generation prompts and generate_image_batch prompts.',
 ].join('\n')
 
+const AGENT_IMAGE_FUNCTION_INSTRUCTIONS = [
+  'You are an image-generation assistant in a multi-turn gallery app.',
+  '',
+  '## Progressive Batch Generation',
+  'For multi-image requests, use a progressive batching strategy to ensure consistency:',
+  '  1. **Base Reference First:** If the images need to share a consistent style, character, or layout (e.g. PPT slides, storyboards), call generate_image ONE time first to establish the visual baseline, then call continue_generation to get another round.',
+  '  2. **Batch Remaining Tasks:** Once the base reference is available, list all remaining images to be generated. The app will generate them concurrently for you. In your descriptions, explicitly instruct to reference the base image to maintain consistency.',
+  '  3. **Independent Images:** If the requested images are completely independent (e.g. "3 different cats"), generate them together in ONE response using generate_image_batch. Do NOT generate them one by one across multiple responses.',
+  'As the turn continues, output a brief progress note before each tool call.',
+  'For single-image requests, call generate_image directly without any listing.',
+  '',
+  '## Generating images',
+  '- One generate_image call per distinct image. Never collage.',
+  '- Dependent images (a later image needs to reference an earlier one) -> generate the prerequisite first, then call continue_generation. The next round will have the result available as `<ref id="..." />`.',
+  '- Only generate when explicitly requested; otherwise reply with text.',
+  '- Preserve the user\'s original intent faithfully. Never substitute requested subjects for copyright/trademark reasons.',
+  '',
+  '## Reference tags and generated images in context',
+  'NEVER output `<ref>`, `<available_refs>`, `<removed_ref>`, or any XML reference tags in visible assistant text - the system injects them automatically and your raw output will be shown directly to the user.',
+  '- Previously generated images are injected as user messages containing the actual image (input_image) followed by a `<ref id="round-N-image-M" prompt="..." />` tag identifying it.',
+  '- Deleted images appear as `<removed_ref id="..." />` without an accompanying image - do not reference them.',
+  '- In user messages: `<ref id="..." />` may also point to user-attached/cited images.',
+  '- In generate_image and generate_image_batch arguments, include matching `<ref id="..." />` tags inside each image prompt when the prompt refers to a reference image. Do not use separate bare reference ids.',
+  'Resolve user mentions ("the first image") to the matching id. Only use existing ids in generate_image and generate_image_batch prompts.',
+].join('\n')
+
 const AGENT_MATH_FORMATTING_INSTRUCTIONS = [
   '## Math formatting',
   '- When a response contains mathematical formulas, output them using Markdown math delimiters supported by this app.',
@@ -57,12 +88,12 @@ const AGENT_MATH_FORMATTING_INSTRUCTIONS = [
   '- Do not use LaTeX delimiters like `\\(...\\)` or `\\[...\\]` in visible assistant text.',
 ].join('\n')
 
-function createAgentInstructions(settings: AppSettings) {
+function createAgentInstructions(settings: AppSettings, imageSource: AgentImageSource = settings.agentImageSource) {
   const maxToolRounds = Number.isFinite(settings.agentMaxToolRounds)
     ? Math.max(1, Math.trunc(settings.agentMaxToolRounds))
     : DEFAULT_AGENT_MAX_TOOL_ROUNDS
   const instructions = [
-    AGENT_IMAGE_INSTRUCTIONS,
+    imageSource === 'assistant' ? AGENT_IMAGE_INSTRUCTIONS : AGENT_IMAGE_FUNCTION_INSTRUCTIONS,
     '',
     '## Tool policy',
     `- Current maximum tool-use rounds for this Agent turn: ${maxToolRounds}.`,
@@ -121,8 +152,48 @@ function createImageTool(params: TaskParams, profile: ApiProfile, maskDataUrl?: 
   return tool
 }
 
-function createAgentTools(params: TaskParams, profile: ApiProfile, settings: AppSettings, maskDataUrl?: string): Array<Record<string, unknown>> {
-  const tools: Array<Record<string, unknown>> = [createImageTool(params, profile, maskDataUrl)]
+function createAgentTools(
+  params: TaskParams,
+  profile: ApiProfile,
+  settings: AppSettings,
+  maskDataUrl?: string,
+  imageSource: AgentImageSource = settings.agentImageSource,
+): Array<Record<string, unknown>> {
+  const tools: Array<Record<string, unknown>> = imageSource === 'assistant'
+    ? [createImageTool(params, profile, maskDataUrl)]
+    : []
+  const singleImageToolHint = imageSource === 'assistant'
+    ? 'the built-in image_generation tool'
+    : 'generate_image'
+
+  if (imageSource === 'image') {
+    tools.push({
+      type: 'function',
+      name: 'generate_image',
+      description: [
+        'Generate exactly one image.',
+        'Use this for single-image requests, or when you need to generate a prerequisite/base image before dependent follow-up images.',
+        'The prompt must be self-contained and include full visual details.',
+        'If the image needs to match a previous image, include the corresponding XML tag (e.g. <ref id="round-1-image-1" />) inside that prompt so the app can attach the reference image automatically.',
+      ].join(' '),
+      parameters: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Short stable identifier for this image, e.g. "cover", "scene_1", "base_cat".',
+          },
+          prompt: {
+            type: 'string',
+            description: 'Complete image generation prompt with all visual details. If it refers to a previous image, include the matching XML tag, e.g. <ref id="round-1-image-1" />.',
+          },
+        },
+        required: ['id', 'prompt'],
+        additionalProperties: false,
+      },
+      strict: true,
+    })
+  }
 
   // generate_image_batch: custom function tool for concurrent multi-image generation
   tools.push({
@@ -132,7 +203,7 @@ function createAgentTools(params: TaskParams, profile: ApiProfile, settings: App
       'Generate multiple images concurrently. Use this ONLY when:',
       '1. There are 2+ remaining images whose prerequisites (base references) are ALL already generated.',
       '2. These images are independent of each other (none references another image in this same batch).',
-      'For single images or prerequisite/base images, use the built-in image_generation tool instead.',
+      `For single images or prerequisite/base images, use ${singleImageToolHint} instead.`,
       'Each image prompt must be self-contained and include full visual style descriptions.',
       'If an image needs to match a previously generated image, include the corresponding XML tag (e.g. <ref id="round-1-image-1" />) inside that image prompt so the app can attach the reference image automatically.',
     ].join(' '),
@@ -637,6 +708,7 @@ export async function callAgentResponsesApi(opts: {
   params: TaskParams
   input: unknown
   maskDataUrl?: string
+  imageSource?: AgentImageSource
   signal?: AbortSignal
   onTextDelta?: (delta: string) => void
   onOutputItems?: (outputItems: ResponsesOutputItem[]) => void
@@ -645,7 +717,7 @@ export async function callAgentResponsesApi(opts: {
   onImageToolCompleted?: (image: AgentApiResultImage) => void | Promise<void>
   onImageToolFailed?: (event: AgentApiImageToolFailure) => void | Promise<void>
 }): Promise<AgentApiResult> {
-  const { settings, profile, params, input, maskDataUrl, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed } = opts
+  const { settings, profile, params, input, maskDataUrl, imageSource = settings.agentImageSource, signal, onTextDelta, onOutputItems, onImageToolStarted, onImagePartialImage, onImageToolCompleted, onImageToolFailed } = opts
   const mime = MIME_MAP[params.output_format] || 'image/png'
   const proxyConfig = readClientDevProxyConfig()
   const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
@@ -658,9 +730,9 @@ export async function callAgentResponsesApi(opts: {
   try {
     const body: Record<string, unknown> = {
       model: profile.model || settings.model,
-      instructions: createAgentInstructions(settings),
+      instructions: createAgentInstructions(settings, imageSource),
       input,
-      tools: createAgentTools(params, profile, settings, maskDataUrl),
+      tools: createAgentTools(params, profile, settings, maskDataUrl, imageSource),
     }
     if (profile.streamImages) {
       body.stream = true
@@ -1033,6 +1105,20 @@ export function parseBatchImageCallArguments(args: string): Array<{ id: string; 
       items.push({ id: id || `image_${items.length + 1}`, prompt })
     }
     return items.length > 0 ? items : null
+  } catch {
+    return null
+  }
+}
+
+export function parseGenerateImageCallArguments(args: string): AgentGenerateImageFunctionCall | null {
+  try {
+    const parsed = JSON.parse(args) as { id?: unknown; prompt?: unknown }
+    if (typeof parsed?.prompt !== 'string' || !parsed.prompt.trim()) return null
+    const rawId = typeof parsed?.id === 'string' ? parsed.id.trim() : ''
+    return {
+      id: rawId || 'image_1',
+      prompt: parsed.prompt,
+    }
   } catch {
     return null
   }

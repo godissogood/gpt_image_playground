@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, type ReactNode } from 'react'
+﻿import { useEffect, useState, useRef, type ReactNode } from 'react'
 import type { TaskRecord } from '../types'
 import { useStore, ensureImageThumbnailCached, subscribeImageThumbnail, retryTask } from '../store'
 import { formatImageRatio } from '../lib/size'
@@ -325,6 +325,11 @@ export default function TaskCard({
   const defaultModelForProvider = task.apiProvider === 'fal' ? DEFAULT_FAL_MODEL : DEFAULT_IMAGES_MODEL
   const showModel = task.apiModel && task.apiModel !== defaultModelForProvider
   const isInterrupted = task.status === 'error' && task.error === '已停止生成。'
+  const taskSourceLabel = isAgentTask
+    ? task.agentImageSource === 'assistant'
+      ? '辅助接口'
+      : '图片接口'
+    : null
 
   return (
     <div className="relative rounded-xl">
@@ -559,6 +564,11 @@ export default function TaskCard({
               onTouchEnd={(e) => e.stopPropagation()}
               onTouchCancel={(e) => e.stopPropagation()}
             >
+              {taskSourceLabel && (
+                <span className="px-1.5 py-0.5 rounded bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 text-xs flex-shrink-0">
+                  {taskSourceLabel}
+                </span>
+              )}
               {/* API Name */}
               {(task.apiProfileName || task.apiProvider) && (
                 <span 

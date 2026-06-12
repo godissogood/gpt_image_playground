@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react'
+﻿import { useEffect, useState, useMemo, useRef } from 'react'
 import { useStore, getCachedImage, ensureImageCached, reuseConfig, editOutputs, removeTask, showCodexCliPrompt, getCodexCliPromptKey, retryTask } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
@@ -254,6 +254,11 @@ export default function DetailModal() {
   const taskProviderName = taskProvider === 'fal' ? 'fal.ai' : taskProvider ? 'OpenAI' : '未知'
   const taskProfileName = task.apiProfileName || '未知'
   const taskModel = task.apiModel || '未知'
+  const taskSourceLabel = isAgentTask
+    ? task.agentImageSource === 'assistant'
+      ? '辅助接口'
+      : '图片接口'
+    : null
   const showSourceInfo = Boolean(task.apiProvider || task.apiProfileName || task.apiModel)
   const isFalReconnecting = task.status === 'error' && task.falRecoverable
   const isCustomReconnecting = task.status === 'error' && task.customRecoverable
@@ -959,7 +964,7 @@ export default function DetailModal() {
                 <span className="text-gray-400 dark:text-gray-500">来源</span>
                 <br />
                 <span className="font-medium text-gray-700 dark:text-gray-200">{taskProviderName}</span>
-                <span className="text-gray-400 dark:text-gray-500"> · {taskProfileName} · {taskModel}</span>
+                <span className="text-gray-400 dark:text-gray-500"> · {taskSourceLabel ? `${taskSourceLabel} · ` : ''}{taskProfileName} · {taskModel}</span>
               </div>
             )}
             <div className="grid grid-cols-2 gap-2 text-xs mb-4">

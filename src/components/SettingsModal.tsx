@@ -1414,7 +1414,7 @@ export default function SettingsModal() {
                       Responses API (/v1/responses)
                     </div>
                     <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
-                      用于 Agent 对话与识图反推提示词。当前版本统一走 OpenAI Responses API，无需再单独拆分多套辅助模型接口。
+                      用于 Agent 对话与识图反推提示词。Agent 对话固定走辅助接口；图片生成按下方“Agent 生图接口来源”设置决定走辅助接口还是独立生图接口。
                     </div>
                   </div>
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -1470,6 +1470,25 @@ export default function SettingsModal() {
                     默认 15。用于限制 Agent 连续调用工具时的最大轮数，防止无限循环。
                   </div>
                 </label>
+                <div className="block">
+                  <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">Agent 生图接口来源</span>
+                  <div className="w-full sm:w-56">
+                    <Select
+                      value={draft.agentImageSource}
+                      onChange={(value) => commitSettings({ ...draft, agentImageSource: value as AppSettings['agentImageSource'] })}
+                      options={[
+                        { label: '独立生图接口', value: 'image' },
+                        { label: '辅助接口', value: 'assistant' },
+                      ]}
+                      className="w-full px-3 py-2 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] hover:bg-white dark:hover:bg-white/[0.06] text-sm transition-all duration-200 shadow-sm text-gray-700 dark:text-gray-200 outline-none"
+                    />
+                  </div>
+                  <div data-selectable-text className="mt-1.5 text-xs text-gray-500 dark:text-gray-500">
+                    {draft.agentImageSource === 'assistant'
+                      ? '当前为：Agent 对话与图片生成都走辅助接口。要求该辅助接口分组支持 image_generation。'
+                      : '当前为：Agent 对话走辅助接口，图片生成走独立生图接口。适合对话分组与生图分组拆开的中转站。'}
+                  </div>
+                </div>
                 <div className="block">
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">网络搜索</span>

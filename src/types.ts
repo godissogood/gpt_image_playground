@@ -2,6 +2,7 @@
 
 export type ApiMode = 'images' | 'responses'
 export type AppMode = 'gallery' | 'agent'
+export type AgentImageSource = 'assistant' | 'image'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
 export const ZIP_DOWNLOAD_ROUTE_VALUES = [
   'task-selection',
@@ -105,6 +106,7 @@ export interface AppSettings {
   referenceImageEditAction: ReferenceImageEditAction
   zipDownloadRoutes: ZipDownloadRoute[]
   agentScrollToBottomAfterSubmit: boolean
+  agentImageSource: AgentImageSource
   agentMaxToolRounds: number
   agentWebSearch: boolean
   agentMathFormattingPrompt: boolean
@@ -227,6 +229,8 @@ export interface TaskRecord {
   agentToolCallId?: string
   /** Agent 批量图像工具调用 ID */
   agentBatchCallId?: string
+  /** Agent 生图来源 */
+  agentImageSource?: AgentImageSource
   /** Agent 图像工具实际动作 */
   agentToolAction?: 'generate' | 'edit' | 'auto' | string
 }

@@ -1,6 +1,7 @@
-import { create } from 'zustand'
+﻿import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type {
+  AgentImageSource,
   AgentConversation,
   AgentMessage,
   AgentRound,
@@ -42,7 +43,7 @@ import {
   storeImage,
 } from './lib/db'
 import { callImageApi } from './lib/api'
-import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
+import { callAgentConversationTitleApi, callAgentResponsesApi, callBatchImageSingle, parseBatchImageCallArguments, parseGenerateImageCallArguments, type AgentApiResultImage } from './lib/agentApi'
 import { collectAgentRoundOutputImageSlots, extractAgentReferenceIds, getAgentCurrentReferenceId, getAgentGeneratedImageReferenceId, replaceAgentPromptImageReferencesForApi } from './lib/agentImageReferences'
 import { showBrowserNotification } from './lib/browserNotification'
 import { IMAGE_FETCH_CORS_HINT } from './lib/imageApiShared'
@@ -1834,6 +1835,10 @@ function createSettingsForApiProfile(settings: AppSettings, profile: ApiProfile)
   })
 }
 
+function getAgentImageProfile(settings: AppSettings, imageSource: AgentImageSource): ApiProfile {
+  return imageSource === 'assistant' ? getAssistantApiProfile(settings) : getImageApiProfile(settings)
+}
+
 function getReusedTaskApiProfile(settings: AppSettings, profileId: string | null): ApiProfile | null {
   if (!profileId) return null
   return normalizeSettings(settings).profiles.find((profile) => profile.id === profileId) ?? null
@@ -3065,7 +3070,7 @@ function mergeResponseOutputItems(previous: ResponsesOutputItem[], next: Respons
 }
 
 function countResponseToolCalls(output: ResponsesOutputItem[]) {
-  return output.filter((item) => item.type === 'image_generation_call').length
+  return output.filter((item) => item.type === 'image_generation_call' || (item.type === 'function_call' && item.name === 'generate_image')).length
 }
 
 function createAgentContinuationInputItem(newImageRefs: string[], toolCallsUsed: number, maxToolCalls: number) {
@@ -3171,6 +3176,15 @@ export async function submitAgentMessage() {
     showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
     state.setShowSettings(true)
     return
+  }
+  if (normalizedSettings.agentImageSource === 'image') {
+    const imageProfile = getImageApiProfile(normalizedSettings)
+    const imageProfileError = validateApiProfile(imageProfile)
+    if (imageProfileError) {
+      showToast(`请先完善图片接口配置：${imageProfileError}`, 'error')
+      state.setShowSettings(true, 'api')
+      return
+    }
   }
 
   const trimmedPrompt = prompt.trim()
@@ -3322,6 +3336,15 @@ export async function regenerateAgentAssistantMessage(conversationId: string, ro
     showToast(`请先完善请求 API 配置：${validateApiProfile(activeProfile)}`, 'error')
     state.setShowSettings(true)
     return
+  }
+  if (normalizedSettings.agentImageSource === 'image') {
+    const imageProfile = getImageApiProfile(normalizedSettings)
+    const imageProfileError = validateApiProfile(imageProfile)
+    if (imageProfileError) {
+      showToast(`请先完善图片接口配置：${imageProfileError}`, 'error')
+      state.setShowSettings(true, 'api')
+      return
+    }
   }
 
   const conversation = state.agentConversations.find((item) => item.id === conversationId)
@@ -3506,6 +3529,7 @@ async function executeAgentRound(
         agentRoundId: roundId,
         agentMessageId: assistantMessageId,
         agentToolCallId: toolCallId,
+        agentImageSource,
         ...(options.agentBatchCallId ? { agentBatchCallId: options.agentBatchCallId } : {}),
       }
 
@@ -3517,6 +3541,7 @@ async function executeAgentRound(
     }
 
     const completeAgentImageTask = async (image: AgentApiResultImage, rawResponsePayload?: string) => {
+      const resolvedProfile = activeProfile
       const toolCallId = image.toolCallId ?? genId()
       const taskId = await ensureStreamingAgentTask(toolCallId)
       const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
@@ -3531,6 +3556,12 @@ async function executeAgentRound(
       updateTaskInStore(taskId, {
         prompt: image.revisedPrompt ?? latestTask?.prompt ?? '',
         outputImages: [imgId],
+        apiProvider: resolvedProfile.provider,
+        apiProfileId: resolvedProfile.id,
+        apiProfileName: resolvedProfile.name,
+        apiMode: resolvedProfile.apiMode,
+        apiModel: resolvedProfile.model,
+        agentImageSource,
         actualParams,
         actualParamsByImage: { [imgId]: actualParams },
         revisedPromptByImage: image.revisedPrompt ? { [imgId]: image.revisedPrompt } : undefined,
@@ -3553,6 +3584,12 @@ async function executeAgentRound(
 
       useStore.getState().setTaskStreamPreview(taskId)
       updateTaskInStore(taskId, {
+        apiProvider: latestTask.apiProvider,
+        apiProfileId: latestTask.apiProfileId,
+        apiProfileName: latestTask.apiProfileName,
+        apiMode: latestTask.apiMode,
+        apiModel: latestTask.apiModel,
+        agentImageSource: latestTask.agentImageSource ?? agentImageSource,
         status: 'error',
         error,
         rawResponsePayload,
@@ -3584,6 +3621,9 @@ async function executeAgentRound(
             ],
       }))
     }
+    const agentImageSource = requestSettings.agentImageSource
+    const imageProfile = getAgentImageProfile(requestSettings, agentImageSource)
+    const imageRequestSettings = createSettingsForApiProfile(requestSettings, imageProfile)
     const maxToolCalls = Number.isFinite(requestSettings.agentMaxToolRounds)
       ? Math.max(1, Math.trunc(requestSettings.agentMaxToolRounds))
       : DEFAULT_AGENT_MAX_TOOL_ROUNDS
@@ -3630,6 +3670,69 @@ async function executeAgentRound(
       return { dataUrls, imageIds }
     }
 
+    const executeGenerateImageFunctionCall = async (functionCallItem: ResponsesOutputItem): Promise<string> => {
+      const parsed = parseGenerateImageCallArguments(functionCallItem.arguments ?? '')
+      if (!parsed) {
+        return JSON.stringify({ error: 'Invalid generate_image arguments' })
+      }
+
+      const referenceIds = uniqueIds(extractAgentReferenceIds(parsed.prompt))
+      const references = await resolveReferenceImages(referenceIds)
+      const toolCallId = functionCallItem.call_id ?? functionCallItem.id ?? genId()
+      const taskPrompt = replaceImageMentionsForApi(parsed.prompt, references.dataUrls.length)
+
+      await ensureStreamingAgentTask(toolCallId, parsed.prompt, references.imageIds, {
+        createdAt: Date.now(),
+        maskTargetImageId: null,
+        maskImageId: null,
+      })
+
+      const taskId = taskIdByToolCallId.get(toolCallId)
+      if (taskId) {
+        updateTaskInStore(taskId, {
+          apiProvider: imageProfile.provider,
+          apiProfileId: imageProfile.id,
+          apiProfileName: imageProfile.name,
+          apiMode: imageProfile.apiMode,
+          apiModel: imageProfile.model,
+        })
+      }
+
+      const result = await callImageApi({
+        settings: imageRequestSettings,
+        prompt: taskPrompt,
+        params: { ...params, n: 1 },
+        inputImageDataUrls: references.dataUrls,
+        onPartialImage: shouldStreamAssistantMessage
+          ? (partial) => {
+              const taskId = taskIdByToolCallId.get(toolCallId)
+              if (!taskId) return
+              useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex ?? partial.partialImageIndex)
+              void persistTaskStreamPartialImage(taskId, partial.image)
+            }
+          : undefined,
+      })
+
+      const image = result.images[0]
+      if (!image) {
+        const error = result.failedRequests?.[0]?.error ?? '接口未返回图片数据'
+        failAgentImageTask(toolCallId, error)
+        return JSON.stringify({ id: parsed.id, status: 'error', error })
+      }
+
+      const actualParams = result.actualParamsList?.[0] ?? result.actualParams
+      const imageResult: AgentApiResultImage = {
+        toolCallId,
+        action: references.dataUrls.length > 0 ? 'edit' : 'generate',
+        dataUrl: image,
+        actualParams,
+        revisedPrompt: result.revisedPrompts?.[0] ?? parsed.prompt,
+      }
+
+      await completeAgentImageTask(imageResult)
+      return JSON.stringify({ id: parsed.id, status: 'done' })
+    }
+
     // Helper: execute a generate_image_batch function call concurrently
     const executeBatchFunctionCall = async (functionCallItem: ResponsesOutputItem): Promise<string> => {
       const callId = functionCallItem.call_id ?? ''
@@ -3658,38 +3761,81 @@ async function executeAgentRound(
       // Fire all batch items concurrently after all cards are visible.
       const batchPromises = batchExecutionItems.map(async ({ item, batchToolCallId, references, referenceIds }) => {
 
-        const batchResult = await callBatchImageSingle({
-          profile: activeProfile,
-          params,
-          batchItemId: item.id,
-          prompt: item.prompt,
-          referenceImageDataUrls: references.dataUrls,
-          referenceIds,
-          signal: controller.signal,
-          onImageToolStarted: shouldStreamAssistantMessage
-            ? async () => {
-                if (controller.signal.aborted) return
-              }
-            : undefined,
-          onPartialImage: shouldStreamAssistantMessage
-            ? async ({ image, partialImageIndex }) => {
-                if (controller.signal.aborted) return
-                const taskId = taskIdByToolCallId.get(batchToolCallId)
-                if (taskId) {
-                  useStore.getState().setTaskStreamPreview(taskId, image, partialImageIndex)
-                  if (partialImageIndex === 0 || partialImageIndex == null) {
-                    void persistTaskStreamPartialImage(taskId, image)
+        const batchResult = agentImageSource === 'assistant'
+          ? await callBatchImageSingle({
+              profile: activeProfile,
+              params,
+              batchItemId: item.id,
+              prompt: item.prompt,
+              referenceImageDataUrls: references.dataUrls,
+              referenceIds,
+              signal: controller.signal,
+              onImageToolStarted: shouldStreamAssistantMessage
+                ? async () => {
+                    if (controller.signal.aborted) return
                   }
-                }
+                : undefined,
+              onPartialImage: shouldStreamAssistantMessage
+                ? async ({ image, partialImageIndex }) => {
+                    if (controller.signal.aborted) return
+                    const taskId = taskIdByToolCallId.get(batchToolCallId)
+                    if (taskId) {
+                      useStore.getState().setTaskStreamPreview(taskId, image, partialImageIndex)
+                      if (partialImageIndex === 0 || partialImageIndex == null) {
+                        void persistTaskStreamPartialImage(taskId, image)
+                      }
+                    }
+                  }
+                : undefined,
+              onImageToolCompleted: shouldStreamAssistantMessage
+                ? async (image) => {
+                    if (controller.signal.aborted) return
+                    await completeAgentImageTask({ ...image, toolCallId: batchToolCallId })
+                  }
+                : undefined,
+            })
+          : await (async () => {
+              const taskId = taskIdByToolCallId.get(batchToolCallId)
+              if (taskId) {
+                updateTaskInStore(taskId, {
+                  apiProvider: imageProfile.provider,
+                  apiProfileId: imageProfile.id,
+                  apiProfileName: imageProfile.name,
+                  apiMode: imageProfile.apiMode,
+                  apiModel: imageProfile.model,
+                  agentImageSource,
+                })
               }
-            : undefined,
-          onImageToolCompleted: shouldStreamAssistantMessage
-            ? async (image) => {
-                if (controller.signal.aborted) return
-                await completeAgentImageTask({ ...image, toolCallId: batchToolCallId })
+              const result = await callImageApi({
+                settings: imageRequestSettings,
+                prompt: replaceImageMentionsForApi(item.prompt, references.dataUrls.length),
+                params: { ...params, n: 1 },
+                inputImageDataUrls: references.dataUrls,
+                onPartialImage: shouldStreamAssistantMessage
+                  ? (partial) => {
+                      const taskId = taskIdByToolCallId.get(batchToolCallId)
+                      if (!taskId) return
+                      useStore.getState().setTaskStreamPreview(taskId, partial.image, partial.requestIndex ?? partial.partialImageIndex)
+                      void persistTaskStreamPartialImage(taskId, partial.image)
+                    }
+                  : undefined,
+              })
+              const image = result.images[0]
+              return {
+                batchItemId: item.id,
+                image: image
+                  ? {
+                      toolCallId: batchToolCallId,
+                      action: references.dataUrls.length > 0 ? 'edit' : 'generate',
+                      dataUrl: image,
+                      actualParams: result.actualParamsList?.[0] ?? result.actualParams,
+                      revisedPrompt: result.revisedPrompts?.[0] ?? item.prompt,
+                    }
+                  : null,
+                error: image ? null : (result.failedRequests?.[0]?.error ?? '接口未返回图片数据'),
+                rawResponsePayload: undefined,
               }
-            : undefined,
-        })
+            })()
 
         // If not streaming and we have an image, complete the pre-created task.
         if (batchResult.image && !shouldStreamAssistantMessage) {
@@ -3743,6 +3889,7 @@ async function executeAgentRound(
         params,
         input: apiInputForTurn,
         maskDataUrl,
+        imageSource: agentImageSource,
         signal: controller.signal,
         onTextDelta: shouldStreamAssistantMessage
           ? (delta) => {
@@ -3849,6 +3996,7 @@ async function executeAgentRound(
           apiProfileName: activeProfile.name,
           apiMode: activeProfile.apiMode,
           apiModel: activeProfile.model,
+          agentImageSource,
           inputImageIds: uniqueIds([...(round?.inputImageIds ?? []), ...promptRefs.imageIds]),
           maskTargetImageId: round?.maskTargetImageId ?? null,
           maskImageId: round?.maskImageId ?? null,
@@ -3874,6 +4022,20 @@ async function executeAgentRound(
         await putTask(task)
       }
 
+      const singleImageFunctionCalls = agentImageSource === 'image'
+        ? currentResponseOutputItems.filter((item) => item.type === 'function_call' && item.name === 'generate_image')
+        : []
+      if (singleImageFunctionCalls.length > 0) {
+        for (const fc of singleImageFunctionCalls) {
+          const output = await executeGenerateImageFunctionCall(fc)
+          currentResponseOutputItems = mergeResponseOutputItems(currentResponseOutputItems, [{
+            type: 'function_call_output',
+            call_id: fc.call_id,
+            output,
+          }])
+        }
+      }
+
       if (result.rawResponsePayload && streamingTaskIds.length > 0) {
         for (const taskId of streamingTaskIds) {
           const latestTask = useStore.getState().tasks.find((task) => task.id === taskId)
@@ -3895,6 +4057,13 @@ async function executeAgentRound(
 
       // Collect function_call_output items for all function calls that need responses
       const functionCallOutputs: ResponsesOutputItem[] = []
+
+      if (singleImageFunctionCalls.length > 0) {
+        for (const fc of singleImageFunctionCalls) {
+          const outputItem = currentResponseOutputItems.find((item) => item.type === 'function_call_output' && item.call_id === fc.call_id)
+          if (outputItem) functionCallOutputs.push(outputItem)
+        }
+      }
 
       if (batchFunctionCalls.length > 0) {
         for (const fc of batchFunctionCalls) {
