@@ -3,6 +3,7 @@
   "name": "gptimage",
   "main": "./worker.js",
   "compatibility_date": "2026-05-07",
+  "keep_vars": true,
   "vars": {
     "VITE_API_PROXY_AVAILABLE": "true",
     "VITE_API_PROXY_LOCKED": "true"
