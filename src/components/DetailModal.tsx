@@ -11,6 +11,8 @@ import { dismissAllTooltips } from '../lib/tooltipDismiss'
 import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from '../lib/downloadImages'
 import { isAgentTaskPromptPending } from '../lib/taskPromptDisplay'
 import { replaceImageMentionsForApi } from '../lib/promptImageMentions'
+import { callImageOcrApi, callTranslateTextBlocksApi } from '../lib/agentApi'
+import { normalizeImageTextBlocks, renderImageTextBlocks, type ImageTextBlock } from '../lib/imageTextTool'
 import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, EditIcon, LinkIcon, TrashIcon } from './icons'
 
 import ViewportTooltip from './ViewportTooltip'
@@ -37,10 +39,17 @@ export default function DetailModal() {
   const [now, setNow] = useState(Date.now())
   const [showRawUrlsModal, setShowRawUrlsModal] = useState(false)
   const [showRawResponseModal, setShowRawResponseModal] = useState(false)
+  const [showTextToolModal, setShowTextToolModal] = useState(false)
+  const [textBlocks, setTextBlocks] = useState<ImageTextBlock[]>([])
+  const [ocrLoading, setOcrLoading] = useState(false)
+  const [translateLoading, setTranslateLoading] = useState(false)
+  const [renderingTextImage, setRenderingTextImage] = useState(false)
+  const [textToolPreview, setTextToolPreview] = useState('')
   const [streamPreviewLoaded, setStreamPreviewLoaded] = useState(false)
   const modalRef = useRef<HTMLDivElement>(null)
   const rawUrlsModalRef = useRef<HTMLDivElement>(null)
   const rawResponseModalRef = useRef<HTMLDivElement>(null)
+  const textToolModalRef = useRef<HTMLDivElement>(null)
 
   const rawUrlsBackdropPointerDownRef = useRef(false)
   const rawResponseBackdropPointerDownRef = useRef(false)
@@ -97,7 +106,7 @@ export default function DetailModal() {
   }, [imageIndex, streamPreviewItems.length, task, task?.status])
 
   useCloseOnEscape(Boolean(task), () => setDetailTaskId(null))
-  usePreventBackgroundScroll(Boolean(task), [modalRef, rawUrlsModalRef, rawResponseModalRef])
+  usePreventBackgroundScroll(Boolean(task), [modalRef, rawUrlsModalRef, rawResponseModalRef, textToolModalRef])
 
   // Reset index when task changes
   useEffect(() => {
@@ -270,6 +279,7 @@ export default function DetailModal() {
   const transparentOutputText = task.transparentOutput || task.params.transparent_output ? 'true' : 'false'
   const currentTransparentOutputFailed = Boolean(currentOutputImageId && task.transparentOutput && task.transparentOriginalImages?.[currentOutputImageIndex] === '')
   const outputCompressionText = task.params.output_compression == null ? '未设置' : String(task.params.output_compression)
+  const currentDisplayImageSrc = task.status === 'running' ? currentStreamPreviewSrc : currentOutputPreviewSrc
 
   const formatTime = (ts: number | null) => {
     if (!ts) return ''
@@ -288,6 +298,103 @@ export default function DetailModal() {
     const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
     const ss = String(seconds % 60).padStart(2, '0')
     return `${mm}:${ss}`
+  }
+
+  const handleRunOcr = async (imageDataUrl?: string) => {
+    const dataUrl = imageDataUrl || textToolPreview || currentDisplayImageSrc || currentOutputPreviewSrc
+    if (!dataUrl) {
+      showToast('当前没有可识别的图片', 'error')
+      return
+    }
+    const { getAssistantApiProfile, validateApiProfile } = await import('../lib/apiProfiles')
+    const assistantProfile = getAssistantApiProfile(settings)
+    const validation = validateApiProfile(assistantProfile)
+    if (validation) {
+      showToast(`请先完善辅助接口配置：${validation}`, 'error')
+      useStore.getState().setShowSettings(true, 'agent')
+      return
+    }
+    setOcrLoading(true)
+    try {
+      const blocks = await callImageOcrApi({
+        settings,
+        profile: assistantProfile,
+        imageDataUrl: dataUrl,
+      })
+      const normalized = normalizeImageTextBlocks(blocks)
+      setTextBlocks(normalized)
+      showToast(normalized.length > 0 ? `识别完成，共 ${normalized.length} 个文本块` : '未识别到可处理文字', normalized.length > 0 ? 'success' : 'info')
+    } catch (err) {
+      showToast(`识别文字失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setOcrLoading(false)
+    }
+  }
+
+  const handleTranslateBlocks = async () => {
+    if (textBlocks.length === 0) {
+      showToast('请先识别文字', 'info')
+      return
+    }
+    const { getAssistantApiProfile, validateApiProfile } = await import('../lib/apiProfiles')
+    const assistantProfile = getAssistantApiProfile(settings)
+    const validation = validateApiProfile(assistantProfile)
+    if (validation) {
+      showToast(`请先完善辅助接口配置：${validation}`, 'error')
+      useStore.getState().setShowSettings(true, 'agent')
+      return
+    }
+    setTranslateLoading(true)
+    try {
+      const translations = await callTranslateTextBlocksApi({
+        settings,
+        profile: assistantProfile,
+        texts: textBlocks.map((block) => block.text),
+        targetLanguage: 'zh',
+      })
+      setTextBlocks((prev) => prev.map((block, index) => ({
+        ...block,
+        replacementText: translations[index] ?? block.replacementText,
+      })))
+      showToast('翻译完成', 'success')
+    } catch (err) {
+      showToast(`翻译文字失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setTranslateLoading(false)
+    }
+  }
+
+  const handleOpenTextTool = async () => {
+    const dataUrl = currentDisplayImageSrc || currentOutputPreviewSrc
+    if (!dataUrl) {
+      showToast('当前没有可处理的图片', 'error')
+      return
+    }
+    setTextToolPreview(dataUrl)
+    setShowTextToolModal(true)
+    if (textBlocks.length === 0) {
+      await handleRunOcr(dataUrl)
+    }
+  }
+
+  const handleApplyTextReplacement = async () => {
+    if (!textToolPreview || textBlocks.length === 0) {
+      showToast('没有可替换的文字内容', 'info')
+      return
+    }
+    setRenderingTextImage(true)
+    try {
+      const nextImage = await renderImageTextBlocks(textToolPreview, textBlocks)
+      const { storeImage } = await import('../lib/db')
+      const imageId = await storeImage(nextImage, 'generated')
+      setShowTextToolModal(false)
+      setLightboxImageId(imageId, [imageId])
+      showToast('文字替换完成，已生成新图片', 'success')
+    } catch (err) {
+      showToast(`替换文字失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setRenderingTextImage(false)
+    }
   }
 
   const handleReuse = () => {
@@ -1042,6 +1149,14 @@ export default function DetailModal() {
               继续图生图
             </button>
             <button
+              onClick={() => void handleOpenTextTool()}
+              disabled={!currentDisplayImageSrc && !currentOutputPreviewSrc}
+              className="col-span-2 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition text-sm font-medium whitespace-nowrap"
+            >
+              <CodeIcon className="w-4 h-4 flex-shrink-0" />
+              文字工具
+            </button>
+            <button
               onClick={handleDelete}
               className="col-span-3 sm:flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition text-sm font-medium whitespace-nowrap"
             >
@@ -1192,6 +1307,94 @@ export default function DetailModal() {
               <pre data-selectable-text className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 font-mono whitespace-pre-wrap break-all select-text">
                 {task.rawResponsePayload.replace(/"(b64_json|base64|data)":\s*"[^"]+"/g, '"$1": "<base64_data>"')}
               </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTextToolModal && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm sm:p-6"
+          onClick={() => setShowTextToolModal(false)}
+        >
+          <div
+            ref={textToolModalRef}
+            className="flex w-full max-w-6xl max-h-[92vh] flex-col overflow-hidden rounded-2xl bg-white shadow-xl dark:bg-[#1c1c1e]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-white/[0.08] shrink-0">
+              <h3 className="text-base font-semibold text-gray-900 dark:text-white">文字工具</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleRunOcr()}
+                  disabled={ocrLoading}
+                  className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-200 disabled:opacity-50 dark:bg-white/[0.06] dark:text-gray-200 dark:hover:bg-white/[0.1]"
+                >
+                  {ocrLoading ? '识别中…' : '重新识别'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleTranslateBlocks()}
+                  disabled={translateLoading || textBlocks.length === 0}
+                  className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-600 transition hover:bg-blue-100 disabled:opacity-50 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
+                >
+                  {translateLoading ? '翻译中…' : '翻译文字'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleApplyTextReplacement()}
+                  disabled={renderingTextImage || textBlocks.length === 0}
+                  className="rounded-lg bg-green-50 px-3 py-1.5 text-xs font-medium text-green-600 transition hover:bg-green-100 disabled:opacity-50 dark:bg-green-500/10 dark:text-green-400 dark:hover:bg-green-500/20"
+                >
+                  {renderingTextImage ? '生成中…' : '应用替换'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowTextToolModal(false)}
+                  className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-500 dark:hover:bg-white/[0.08] dark:hover:text-gray-300 transition-colors"
+                >
+                  <CloseIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-4 lg:flex-row">
+              <div className="lg:w-[52%] min-h-0 overflow-auto rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/[0.06] dark:bg-black/20">
+                {textToolPreview ? (
+                  <img src={textToolPreview} alt="" className="w-full rounded-lg object-contain" />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-gray-400 dark:text-gray-500">暂无可处理图片</div>
+                )}
+              </div>
+              <div className="lg:w-[48%] min-h-0 overflow-auto rounded-xl border border-gray-100 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.02]">
+                {textBlocks.length === 0 ? (
+                  <div className="text-sm text-gray-500 dark:text-gray-400">先识别图片中的文字，再逐块翻译或修改内容。</div>
+                ) : (
+                  <div className="space-y-4">
+                    {textBlocks.map((block, index) => (
+                      <div key={block.id} className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/[0.06] dark:bg-black/20">
+                        <div className="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">文本块 {index + 1}</div>
+                        <textarea
+                          value={block.text}
+                          readOnly
+                          className="mb-2 min-h-[70px] w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none dark:border-white/[0.08] dark:bg-white/[0.03] dark:text-gray-200"
+                        />
+                        <textarea
+                          value={block.replacementText}
+                          onChange={(e) => {
+                            const value = e.target.value
+                            setTextBlocks((prev) => prev.map((item) => item.id === block.id ? { ...item, replacementText: value } : item))
+                          }}
+                          className="min-h-[80px] w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-blue-400 dark:border-blue-500/30 dark:bg-white/[0.03] dark:text-gray-200"
+                        />
+                        <div className="mt-2 text-[11px] text-gray-400 dark:text-gray-500">
+                          区域：x {block.bbox.x.toFixed(2)} · y {block.bbox.y.toFixed(2)} · w {block.bbox.w.toFixed(2)} · h {block.bbox.h.toFixed(2)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

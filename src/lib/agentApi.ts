@@ -925,6 +925,142 @@ export async function callImageToPromptApi(opts: {
   }
 }
 
+export async function callImageOcrApi(opts: {
+  settings: AppSettings
+  profile: ApiProfile
+  imageDataUrl: string
+  signal?: AbortSignal
+}): Promise<Array<{
+  id: string
+  text: string
+  bbox: { x: number; y: number; w: number; h: number }
+  language?: string
+  confidence?: number
+}>> {
+  const { settings, profile, imageDataUrl, signal } = opts
+  const proxyConfig = readClientDevProxyConfig()
+  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const abortFromCaller = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
+
+  try {
+    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+      method: 'POST',
+      headers: createHeaders(profile),
+      cache: 'no-store',
+      body: JSON.stringify({
+        model: profile.model || settings.model,
+        input: [{
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: [
+                'You are an OCR extraction assistant.',
+                'Detect visible text blocks in the image and return strict JSON only.',
+                'Output format:',
+                '{"blocks":[{"id":"text-1","text":"...","bbox":{"x":0.1,"y":0.1,"w":0.3,"h":0.1},"language":"zh","confidence":0.98}]}',
+                'Rules:',
+                '- x/y/w/h must be normalized to 0-1 relative coordinates.',
+                '- Group nearby text into readable blocks.',
+                '- If no readable text exists, return {"blocks":[]}.',
+                '- Do not output markdown or explanations.',
+              ].join('\n'),
+            },
+            {
+              type: 'input_image',
+              image_url: imageDataUrl,
+            },
+          ],
+        }],
+        max_output_tokens: 1200,
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response))
+    }
+
+    const payload = await response.json() as ResponsesApiResponse
+    const text = extractText(payload)
+    if (!text.trim()) return []
+    const parsed = JSON.parse(text) as { blocks?: unknown }
+    return Array.isArray(parsed.blocks) ? parsed.blocks as Array<{
+      id: string
+      text: string
+      bbox: { x: number; y: number; w: number; h: number }
+      language?: string
+      confidence?: number
+    }> : []
+  } finally {
+    clearTimeout(timeoutId)
+    signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
+export async function callTranslateTextBlocksApi(opts: {
+  settings: AppSettings
+  profile: ApiProfile
+  texts: string[]
+  targetLanguage: 'zh' | 'en'
+  signal?: AbortSignal
+}): Promise<string[]> {
+  const { settings, profile, texts, targetLanguage, signal } = opts
+  if (texts.length === 0) return []
+  const proxyConfig = readClientDevProxyConfig()
+  const useApiProxy = shouldUseApiProxy(profile.apiProxy, proxyConfig)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), profile.timeout * 1000)
+  const abortFromCaller = () => controller.abort()
+  if (signal?.aborted) controller.abort()
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
+
+  try {
+    const response = await fetch(buildApiUrl(profile.baseUrl, 'responses', proxyConfig, useApiProxy), {
+      method: 'POST',
+      headers: createHeaders(profile),
+      cache: 'no-store',
+      body: JSON.stringify({
+        model: profile.model || settings.model,
+        input: [{
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: [
+              `Translate each text item into ${targetLanguage === 'zh' ? 'Simplified Chinese' : 'English'}.`,
+              'Return strict JSON only in this format:',
+              '{"translations":["...", "..."]}',
+              'Do not merge items. Keep item order unchanged.',
+              JSON.stringify({ texts }),
+            ].join('\n'),
+          }],
+        }],
+        max_output_tokens: 1200,
+      }),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error(await getApiErrorMessage(response))
+    }
+
+    const payload = await response.json() as ResponsesApiResponse
+    const text = extractText(payload)
+    if (!text.trim()) return texts
+    const parsed = JSON.parse(text) as { translations?: unknown }
+    return Array.isArray(parsed.translations)
+      ? parsed.translations.map((item, index) => typeof item === 'string' && item.trim() ? item : texts[index] ?? '')
+      : texts
+  } finally {
+    clearTimeout(timeoutId)
+    signal?.removeEventListener('abort', abortFromCaller)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Batch image generation: execute a single image via Responses API
 // Uses the same pattern as gallery Responses API mode:
