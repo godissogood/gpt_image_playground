@@ -3,6 +3,7 @@
 export type ApiMode = 'images' | 'responses'
 export type AppMode = 'gallery' | 'agent'
 export type AgentImageSource = 'assistant' | 'image'
+export type GalleryMode = 'generate' | 'ocr'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
 export const ZIP_DOWNLOAD_ROUTE_VALUES = [
   'task-selection',
@@ -286,6 +287,15 @@ export interface AgentConversation {
   updatedAt: number
   rounds: AgentRound[]
   messages: AgentMessage[]
+}
+
+export interface OcrTextBlock {
+  id: string
+  text: string
+  replacementText: string
+  bbox: { x: number; y: number; w: number; h: number }
+  language?: string
+  confidence?: number
 }
 
 // ===== IndexedDB 存储的图片 =====

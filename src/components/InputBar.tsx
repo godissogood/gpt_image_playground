@@ -432,6 +432,8 @@ function AtImageOptionThumb({ option }: { option: AtImageOption }) {
 export default function InputBar() {
   const prompt = useStore((s) => s.prompt)
   const appMode = useStore((s) => s.appMode)
+  const galleryMode = useStore((s) => s.galleryMode)
+  const setGalleryMode = useStore((s) => s.setGalleryMode)
   const setPrompt = useStore((s) => s.setPrompt)
   const inputImages = useStore((s) => s.inputImages)
   const addInputImage = useStore((s) => s.addInputImage)
@@ -759,6 +761,7 @@ export default function InputBar() {
   ), [activeProfile.id, currentActiveProfile.id, settings])
   const hasSubmitApiConfig = Boolean(activeProfile.apiKey)
   const canSubmit = Boolean(prompt.trim() && hasSubmitApiConfig && !activeAgentIsRunning)
+  const isGalleryOcrMode = appMode === 'gallery' && galleryMode === 'ocr'
   const generationMode = maskDraft ? 'inpaint' : inputImages.length > 0 ? 'img2img' : 'txt2img'
   const generationModeLabel = generationMode === 'inpaint'
     ? '局部重绘'
@@ -2528,10 +2531,42 @@ export default function InputBar() {
             <div className={`w-10 h-1 rounded-full bg-gray-300 dark:bg-white/[0.06] transition-transform duration-200 ${mobileCollapsed ? 'scale-x-75' : ''}`} />
           </div>
 
-          {renderGenerationModeBar()}
+          {appMode === 'gallery' && (
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-gray-400 dark:text-gray-500">工作区</span>
+              <button
+                type="button"
+                onClick={() => setGalleryMode('generate')}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                  galleryMode === 'generate'
+                    ? 'bg-blue-500 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08]'
+                }`}
+              >
+                生成
+              </button>
+              <button
+                type="button"
+                onClick={() => setGalleryMode('ocr')}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                  galleryMode === 'ocr'
+                    ? 'bg-blue-500 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/[0.05] dark:text-gray-300 dark:hover:bg-white/[0.08]'
+                }`}
+              >
+                OCR
+              </button>
+              {isGalleryOcrMode && (
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  OCR 模式下请在上方主工作区完成导图、识别、改框与修补。
+                </span>
+              )}
+            </div>
+          )}
+          {!isGalleryOcrMode && renderGenerationModeBar()}
 
           {/* 输入图片行（移动端可折叠） */}
-          {inputImages.length > 0 && (
+          {!isGalleryOcrMode && inputImages.length > 0 && (
             isMobile ? (
               <>
                 <div className={`collapse-section${mobileCollapsed ? ' collapsed' : ''}`}>
@@ -2551,7 +2586,7 @@ export default function InputBar() {
           )}
 
           {/* 输入框 */}
-          <div className="relative grid">
+          {!isGalleryOcrMode && <div className="relative grid">
             {showAtImageMenu && (
               <div style={{ left: `${menuLeft}px` }} className="absolute bottom-full z-50 mb-2 w-64 overflow-hidden rounded-2xl border border-gray-200/70 bg-white/95 p-1.5 shadow-xl ring-1 ring-black/5 backdrop-blur-xl dark:border-white/[0.08] dark:bg-gray-900/95 dark:ring-white/10">
                 <div className="px-2 pb-1 pt-0.5 text-[11px] text-gray-400 dark:text-gray-500">选择图片引用</div>
@@ -2645,10 +2680,10 @@ export default function InputBar() {
                 <CloseIcon className="w-3.5 h-3.5" />
               </button>
             )}
-          </div>
+          </div>}
 
           {/* 参数 + 按钮 */}
-          <div className="mt-3">
+          {!isGalleryOcrMode ? <div className="mt-3">
             {/* 桌面端布局 */}
             <div className="hidden sm:flex items-end justify-between gap-3">
               {renderParams('grid-cols-6')}
@@ -2813,7 +2848,11 @@ export default function InputBar() {
                 </div>
               </div>
             </div>
-          </div>
+          </div> : (
+            <div className="mt-3 rounded-2xl border border-dashed border-gray-200 px-4 py-4 text-sm text-gray-500 dark:border-white/[0.08] dark:text-gray-400">
+              OCR 模式已接管当前输入区。这里不再显示文生图 / 图生图参数，避免和 OCR 工作区重复。
+            </div>
+          )}
 
           <input
             ref={fileInputRef}

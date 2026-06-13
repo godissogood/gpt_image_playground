@@ -1,21 +1,13 @@
+import type { OcrTextBlock } from '../types'
 import { loadImage } from './canvasImage'
-
-export interface ImageTextBlock {
-  id: string
-  text: string
-  replacementText: string
-  bbox: { x: number; y: number; w: number; h: number }
-  language?: string
-  confidence?: number
-}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-export function normalizeImageTextBlocks(value: unknown): ImageTextBlock[] {
+export function normalizeImageTextBlocks(value: unknown): OcrTextBlock[] {
   if (!Array.isArray(value)) return []
-  const blocks: ImageTextBlock[] = []
+  const blocks: OcrTextBlock[] = []
   for (let index = 0; index < value.length; index += 1) {
     const item = value[index]
     if (!item || typeof item !== 'object') continue
@@ -116,7 +108,7 @@ function fitFont(ctx: CanvasRenderingContext2D, text: string, boxWidth: number, 
   }
 }
 
-export async function renderImageTextBlocks(imageDataUrl: string, blocks: ImageTextBlock[]) {
+export async function renderImageTextBlocks(imageDataUrl: string, blocks: OcrTextBlock[]) {
   const image = await loadImage(imageDataUrl)
   const canvas = document.createElement('canvas')
   canvas.width = image.naturalWidth

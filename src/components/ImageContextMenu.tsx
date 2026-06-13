@@ -1,12 +1,20 @@
-import React, { useEffect, useState, useRef } from 'react'
-import { useStore, addImageFromUrl, ensureImageCached } from '../store'
+import React, { useEffect, useRef, useState } from 'react'
+import { addImageFromUrl, ensureImageCached, openImageInOcrMode, useStore } from '../store'
 import { copyImageSourceToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { downloadImageEntriesAsZip, downloadImageIds, formatExportFileTime, getImageZipEntries } from '../lib/downloadImages'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
-import { CopyIcon, DownloadIcon, EditIcon } from './icons'
+import { CodeIcon, CopyIcon, DownloadIcon, EditIcon } from './icons'
+
+type MenuInfo = {
+  src: string
+  imageId?: string
+  outputImageIds: string[]
+  x: number
+  y: number
+}
 
 export default function ImageContextMenu() {
-  const [menuInfo, setMenuInfo] = useState<{ src: string; imageId?: string; outputImageIds: string[]; x: number; y: number } | null>(null)
+  const [menuInfo, setMenuInfo] = useState<MenuInfo | null>(null)
   const showToast = useStore((s) => s.showToast)
   const inputImages = useStore((s) => s.inputImages)
   const setDetailTaskId = useStore((s) => s.setDetailTaskId)
@@ -18,53 +26,48 @@ export default function ImageContextMenu() {
     if (isEmbeddedPage()) return
 
     const onContextMenu = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (target && target.tagName === 'IMG') {
-        const imgTarget = target as HTMLImageElement
-        // 忽略没有 src 或空的 img
-        if (!imgTarget.src) return
+      const target = e.target as HTMLElement | null
+      if (!target || target.tagName !== 'IMG') return
 
-        // iOS 触控设备上，放行原生长按菜单（以支持原生保存图片）
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-        const isTouch = window.matchMedia('(pointer: coarse)').matches
-        if (isIOS && isTouch) return
+      const imgTarget = target as HTMLImageElement
+      if (!imgTarget.src) return
 
-        e.preventDefault()
-        setMenuInfo({
-          src: imgTarget.src,
-          imageId: imgTarget.dataset.imageId,
-          outputImageIds: imgTarget.dataset.outputImageIds?.split(',').filter(Boolean) ?? [],
-          x: e.clientX,
-          y: e.clientY,
-        })
-      }
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      const isTouch = window.matchMedia('(pointer: coarse)').matches
+      if (isIOS && isTouch) return
+
+      e.preventDefault()
+      setMenuInfo({
+        src: imgTarget.src,
+        imageId: imgTarget.dataset.imageId,
+        outputImageIds: imgTarget.dataset.outputImageIds?.split(',').filter(Boolean) ?? [],
+        x: e.clientX,
+        y: e.clientY,
+      })
     }
 
-    // 监听全局 contextmenu，兼容桌面端右键和大部分移动端长按
     window.addEventListener('contextmenu', onContextMenu)
-    return () => {
-      window.removeEventListener('contextmenu', onContextMenu)
-    }
+    return () => window.removeEventListener('contextmenu', onContextMenu)
   }, [])
 
-  // 点击其他地方、滚动或缩放时关闭菜单
   useEffect(() => {
     if (!menuInfo) return
+
     const close = (e: Event) => {
-      if (menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) {
-        return
-      }
+      if (menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) return
       if (e.target instanceof Element && e.target.closest('[data-lightbox-root]')) {
         window.dispatchEvent(new Event('image-context-menu-dismiss-lightbox-click'))
       }
       if (e.type === 'mousedown' || e.type === 'touchstart') suppressGlobalClicks()
       setMenuInfo(null)
     }
+
     window.addEventListener('mousedown', close, { capture: true })
     window.addEventListener('touchstart', close, { capture: true })
     window.addEventListener('wheel', close, { capture: true })
     window.addEventListener('scroll', close, { capture: true })
     window.addEventListener('resize', close)
+
     return () => {
       window.removeEventListener('mousedown', close, { capture: true })
       window.removeEventListener('touchstart', close, { capture: true })
@@ -103,23 +106,14 @@ export default function ImageContextMenu() {
       let fileNameBase = ''
       if (imageId) {
         const tasks = useStore.getState().tasks
-        const matchedTask = tasks.find(t => t.outputImages?.includes(imageId))
-        if (matchedTask) {
-          fileNameBase = `task-${matchedTask.id}`
-        } else {
-          fileNameBase = `image-${imageId}`
-        }
+        const matchedTask = tasks.find((task) => task.outputImages?.includes(imageId))
+        fileNameBase = matchedTask ? `task-${matchedTask.id}` : `image-${imageId}`
       } else {
-        const timeStr = formatExportFileTime(new Date())
-        fileNameBase = `image-${timeStr}`
+        fileNameBase = `image-${formatExportFileTime(new Date())}`
       }
 
       const result = await downloadImageIds([imageId || src], fileNameBase)
-      if (result.successCount === 0) {
-        showToast('下载失败', 'error')
-      } else {
-        showToast('下载成功', 'success')
-      }
+      showToast(result.successCount === 0 ? '下载失败' : '下载成功', result.successCount === 0 ? 'error' : 'success')
     } catch (err) {
       console.error(err)
       showToast('下载失败', 'error')
@@ -136,27 +130,19 @@ export default function ImageContextMenu() {
       let fileNameBase = ''
       if (outputImageIds[0]) {
         const tasks = useStore.getState().tasks
-        const matchedTask = tasks.find(t => t.outputImages?.includes(outputImageIds[0]))
-        if (matchedTask) {
-          fileNameBase = `task-${matchedTask.id}`
-        }
+        const matchedTask = tasks.find((task) => task.outputImages?.includes(outputImageIds[0]))
+        if (matchedTask) fileNameBase = `task-${matchedTask.id}`
       }
-      if (!fileNameBase) {
-        const timeStr = formatExportFileTime(new Date())
-        fileNameBase = `batch-${timeStr}`
-      }
+      if (!fileNameBase) fileNameBase = `batch-${formatExportFileTime(new Date())}`
 
       const settings = useStore.getState().settings
       const result = settings.zipDownloadRoutes.includes('image-context-menu-all')
         ? await downloadImageEntriesAsZip(getImageZipEntries(outputImageIds, fileNameBase), fileNameBase)
         : await downloadImageIds(outputImageIds, fileNameBase)
-      if (result.successCount === 0) {
-        showToast('下载失败', 'error')
-      } else if (result.failCount > 0) {
-        showToast(`部分下载失败：成功 ${result.successCount}，失败 ${result.failCount}`, 'error')
-      } else {
-        showToast(result.successCount > 1 ? `下载成功：${result.successCount} 张图片` : '下载成功', 'success')
-      }
+
+      if (result.successCount === 0) showToast('下载失败', 'error')
+      else if (result.failCount > 0) showToast(`部分下载失败：成功 ${result.successCount}，失败 ${result.failCount}`, 'error')
+      else showToast(result.successCount > 1 ? `下载成功：${result.successCount} 张图片` : '下载成功', 'success')
     } catch (err) {
       console.error(err)
       showToast('下载失败', 'error')
@@ -184,56 +170,73 @@ export default function ImageContextMenu() {
     }
   }
 
-  // 保证菜单在视口内
+  const handleOpenOcr = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const imageId = menuInfo.imageId
+    setMenuInfo(null)
+
+    try {
+      const src = await getOriginalImageSrc()
+      await openImageInOcrMode(imageId, src)
+      showToast('已打开 OCR 模式', 'success')
+    } catch (err) {
+      console.error(err)
+      showToast(`打开 OCR 模式失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    }
+  }
+
   let left = menuInfo.x
   let top = menuInfo.y
-  const MENU_WIDTH = 120
+  const menuWidth = 136
   const showDownloadAll = menuInfo.outputImageIds.length > 1
-  const MENU_HEIGHT = showDownloadAll ? 160 : 128
+  const menuHeight = showDownloadAll ? 196 : 164
 
-  if (left + MENU_WIDTH > window.innerWidth) {
-    left -= MENU_WIDTH
-  }
-  if (top + MENU_HEIGHT > window.innerHeight) {
-    top -= MENU_HEIGHT
-  }
+  if (left + menuWidth > window.innerWidth) left -= menuWidth
+  if (top + menuHeight > window.innerHeight) top -= menuHeight
 
   return (
     <div
       ref={menuRef}
-      className="fixed z-[9999] bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-100 dark:border-gray-700 py-1 w-[120px] overflow-hidden animate-fade-in"
+      className="fixed z-[9999] w-[136px] overflow-hidden rounded-lg border border-gray-100 bg-white py-1 shadow-xl animate-fade-in dark:border-gray-700 dark:bg-gray-800"
       style={{ left, top }}
       onContextMenu={(e) => e.preventDefault()}
     >
       <button
         onClick={handleCopy}
-        className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
+        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
       >
-        <CopyIcon className="w-4 h-4 flex-shrink-0" />
+        <CopyIcon className="h-4 w-4 flex-shrink-0" />
         复制
       </button>
       <button
         onClick={handleDownload}
-        className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
+        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
       >
-        <DownloadIcon className="w-4 h-4 flex-shrink-0" />
+        <DownloadIcon className="h-4 w-4 flex-shrink-0" />
         下载
       </button>
       {showDownloadAll && (
         <button
           onClick={handleDownloadAll}
-          className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
+          className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
         >
-          <DownloadIcon className="w-4 h-4 flex-shrink-0" />
+          <DownloadIcon className="h-4 w-4 flex-shrink-0" />
           下载全部
         </button>
       )}
       <button
         onClick={handleEdit}
-        className="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2 transition-colors"
+        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
       >
-        <EditIcon className="w-4 h-4 flex-shrink-0" />
-        编辑
+        <EditIcon className="h-4 w-4 flex-shrink-0" />
+        继续编辑
+      </button>
+      <button
+        onClick={handleOpenOcr}
+        className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700/50"
+      >
+        <CodeIcon className="h-4 w-4 flex-shrink-0" />
+        打开 OCR
       </button>
     </div>
   )

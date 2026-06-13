@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { useStore, getCachedImage, ensureImageCached } from '../store'
+import { useStore, getCachedImage, ensureImageCached, openImageInOcrMode } from '../store'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { createMaskPreviewDataUrl } from '../lib/canvasImage'
 import { suppressGlobalClicks } from '../lib/clickSuppression'
+import { CodeIcon } from './icons'
 
 const MIN_SCALE = 1
 const MAX_SCALE = 10
@@ -604,6 +605,16 @@ function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, current
   const navBtnClass =
     'absolute top-1/2 -translate-y-1/2 p-2 rounded-full bg-black/40 text-white hover:bg-black/60 transition-all z-10 backdrop-blur-sm'
 
+  const handleOpenOcr = async (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    try {
+      await openImageInOcrMode(imageId, src)
+      useStore.getState().showToast('已打开 OCR 模式', 'success')
+    } catch (err) {
+      useStore.getState().showToast(`打开 OCR 模式失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+    }
+  }
+
   return (
     <div
       ref={containerRef}
@@ -677,6 +688,14 @@ function LightboxInner({ src, imageId, maskPreviewSrc, onClose, showNav, current
           </span>
         </div>
       )}
+      <button
+        type="button"
+        onClick={handleOpenOcr}
+        className="absolute right-4 top-4 z-20 inline-flex items-center gap-2 rounded-full bg-black/45 px-3 py-2 text-xs font-medium text-white backdrop-blur-sm transition hover:bg-black/60"
+      >
+        <CodeIcon className="h-4 w-4" />
+        OCR
+      </button>
     </div>
   )
 

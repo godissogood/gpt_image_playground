@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { ALL_FAVORITES_COLLECTION_ID, getTaskFavoriteCollectionIds, useStore, reuseConfig, editOutputs, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
+import { ALL_FAVORITES_COLLECTION_ID, getTaskFavoriteCollectionIds, openImageInOcrMode, useStore, reuseConfig, editOutputs, removeTask, taskMatchesFilterStatus, taskMatchesSearchQuery } from '../store'
 import TaskCard from './TaskCard'
 
 export default function TaskGrid() {
@@ -306,6 +306,11 @@ export default function TaskGrid() {
               }}
               onReuse={() => reuseConfig(task)}
               onEditOutputs={() => editOutputs(task)}
+              onOpenOcr={async () => {
+                const imageId = task.outputImages?.[0]
+                if (!imageId) return
+                await openImageInOcrMode(imageId)
+              }}
               onDelete={() => handleDelete(task)}
               isSelected={selectedTaskIds.includes(task.id)}
             />

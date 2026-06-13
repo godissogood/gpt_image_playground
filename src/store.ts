@@ -9,6 +9,7 @@ import type {
   ApiProfile,
   AppSettings,
   AppMode,
+  GalleryMode,
   TaskParams,
   InputImage,
   MaskDraft,
@@ -677,6 +678,7 @@ export function getPersistedState(state: AppState) {
       : {}),
     dismissedCodexCliPrompts: state.dismissedCodexCliPrompts,
     appMode: state.appMode,
+    galleryMode: state.galleryMode,
     galleryInputDraft: settings.persistInputOnRestart && galleryInputDraft
       ? { ...galleryInputDraft, inputImages: galleryInputDraft.inputImages.map((img) => ({ id: img.id, dataUrl: '' })) }
       : null,
@@ -720,7 +722,10 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     typeof persisted.activeAgentConversationId === 'string' && (!hasPersistedAgentConversations || agentConversations.some((conversation) => conversation.id === persisted.activeAgentConversationId))
       ? persisted.activeAgentConversationId
       : agentConversations[0]?.id ?? null
-  const appMode = persisted.appMode === 'agent' ? 'agent' : 'gallery'
+  const appMode = persisted.appMode === 'agent'
+    ? 'agent'
+    : 'gallery'
+  const galleryMode = persisted.galleryMode === 'ocr' ? 'ocr' : 'generate'
   const galleryInputDraft = settings.persistInputOnRestart
     ? normalizeAgentInputDraft(persisted.galleryInputDraft ?? {
         prompt: persisted.prompt,
@@ -756,6 +761,7 @@ function mergePersistedState(persistedState: unknown, currentState: AppState): A
     ...persisted,
     settings,
     appMode,
+    galleryMode,
     galleryInputDraft: galleryInputDraft && !isEmptyAgentInputDraft(galleryInputDraft) ? galleryInputDraft : null,
     agentConversations,
     activeAgentConversationId,
@@ -793,6 +799,8 @@ interface AppState {
   // 输入
   prompt: string
   setPrompt: (p: string) => void
+  galleryMode: GalleryMode
+  setGalleryMode: (mode: GalleryMode) => void
   inputImages: InputImage[]
   addInputImage: (img: InputImage) => void
   replaceInputImage: (idx: number, img: InputImage) => void
@@ -806,6 +814,12 @@ interface AppState {
   maskEditorImageId: string | null
   setMaskEditorImageId: (id: string | null) => void
   galleryInputDraft: AgentInputDraft | null
+  ocrImage: InputImage | null
+  ocrImages: InputImage[]
+  setOcrImages: (images: InputImage[]) => void
+  addOcrImages: (images: InputImage[]) => void
+  removeOcrImage: (imageId: string) => void
+  setOcrImage: (image: InputImage | null) => void
 
   // 参数
   params: TaskParams
@@ -1207,6 +1221,8 @@ export const useStore = create<AppState>()(
           },
         })
       },
+      galleryMode: 'generate',
+      setGalleryMode: (galleryMode) => set({ galleryMode }),
 
       // Settings
       settings: { ...DEFAULT_SETTINGS },
@@ -1306,6 +1322,36 @@ export const useStore = create<AppState>()(
             maskEditorImageId: null,
           })
         }),
+      ocrImage: null,
+      ocrImages: [],
+      setOcrImages: (ocrImages) => set({
+        ocrImages,
+        ocrImage: ocrImages[0] ?? null,
+      }),
+      addOcrImages: (images) => set((state) => {
+        const existing = new Map(state.ocrImages.map((image) => [image.id, image]))
+        for (const image of images) existing.set(image.id, image)
+        const ocrImages = Array.from(existing.values())
+        return {
+          ocrImages,
+          ocrImage: state.ocrImage ?? ocrImages[0] ?? null,
+        }
+      }),
+      removeOcrImage: (imageId) => set((state) => {
+        const ocrImages = state.ocrImages.filter((image) => image.id !== imageId)
+        return {
+          ocrImages,
+          ocrImage: state.ocrImage?.id === imageId ? ocrImages[0] ?? null : state.ocrImage,
+        }
+      }),
+      setOcrImage: (ocrImage) => set((state) => ({
+        ocrImage,
+        ocrImages: ocrImage
+          ? state.ocrImages.some((image) => image.id === ocrImage.id)
+            ? state.ocrImages.map((image) => image.id === ocrImage.id ? ocrImage : image)
+            : [ocrImage, ...state.ocrImages]
+          : state.ocrImages,
+      })),
       setInputImages: (imgs, options) =>
         set((s) => {
           const inputImages = orderImagesWithMaskFirst(imgs, s.maskDraft?.targetImageId)
@@ -5434,6 +5480,33 @@ export async function addImageFromUrl(src: string): Promise<void> {
   const id = await storeImage(dataUrl, 'upload')
   cacheImage(id, dataUrl)
   useStore.getState().addInputImage({ id, dataUrl })
+}
+
+export async function openImageInOcrMode(imageId: string | null | undefined, dataUrl?: string | null): Promise<void> {
+  const state = useStore.getState()
+  let resolvedImageId = imageId ?? ''
+  let resolvedDataUrl = dataUrl ?? ''
+
+  if (!resolvedDataUrl && resolvedImageId) {
+    resolvedDataUrl = await ensureImageCached(resolvedImageId) ?? ''
+  }
+
+  if (!resolvedImageId && resolvedDataUrl) {
+    resolvedImageId = await storeImage(resolvedDataUrl, 'upload')
+    cacheImage(resolvedImageId, resolvedDataUrl)
+  }
+
+  if (!resolvedImageId || !resolvedDataUrl) {
+    throw new Error('当前图片尚未准备好')
+  }
+
+  const image = { id: resolvedImageId, dataUrl: resolvedDataUrl }
+  state.addOcrImages([image])
+  state.setOcrImage(image)
+  state.setAppMode('gallery')
+  state.setGalleryMode('ocr')
+  state.setDetailTaskId(null)
+  state.setLightboxImageId(null)
 }
 
 function fileToDataUrl(file: File): Promise<string> {

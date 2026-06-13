@@ -9,6 +9,7 @@ import Header from './components/Header'
 import SearchBar from './components/SearchBar'
 import TaskGrid from './components/TaskGrid'
 import AgentWorkspace from './components/AgentWorkspace'
+import OcrWorkspace from './components/OcrWorkspace'
 import InputBar from './components/InputBar'
 import DetailModal from './components/DetailModal'
 import Lightbox from './components/Lightbox'
@@ -26,6 +27,7 @@ let customProviderConfigUrlImportStarted = false
 export default function App() {
   const setSettings = useStore((s) => s.setSettings)
   const appMode = useStore((s) => s.appMode)
+  const galleryMode = useStore((s) => s.galleryMode)
   const filterFavorite = useStore((s) => s.filterFavorite)
   const activeFavoriteCollectionId = useStore((s) => s.activeFavoriteCollectionId)
   useDockerApiUrlMigrationNotice()
@@ -78,6 +80,8 @@ export default function App() {
       <Header />
       {appMode === 'agent' ? (
         <AgentWorkspace />
+      ) : galleryMode === 'ocr' ? (
+        <OcrWorkspace />
       ) : (
         <main data-home-main data-drag-select-surface className="pb-48">
           <div className="safe-area-x max-w-7xl mx-auto">

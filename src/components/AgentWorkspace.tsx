@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useRef, useCallback, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { AgentConversation, AgentMessage, AgentRound, ResponsesOutputItem, TaskRecord } from '../types'
-import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
+import { deleteAgentRoundFromConversation, editOutputs, getActiveAgentRounds, getAgentBranchLeafId, getAgentSiblingRounds, getCachedImage, ensureImageCached, openImageInOcrMode, regenerateAgentAssistantMessage, remapAgentRoundMentionsForPathChange, removeMultipleTasks, removeTask, reuseConfig, useStore } from '../store'
 import { getPromptMentionParts } from '../lib/promptImageMentions'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { collectWebSearchCalls, getAgentRoundOutputItems, getWebSearchStatusForCalls, type AgentWebSearchStatus } from '../lib/agentWebSearch'
@@ -9,7 +9,7 @@ import { downloadImageEntriesAsZip, downloadImageIds, getImageZipEntries } from 
 import TaskCard from './TaskCard'
 import ViewportTooltip from './ViewportTooltip'
 import MarkdownRenderer from './MarkdownRenderer'
-import { TrashIcon, DownloadIcon, EditIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, SidebarLeftIcon, FavoriteIcon, CloseIcon, CopyIcon, RefreshIcon, ArrowDownIcon } from './icons'
+import { TrashIcon, DownloadIcon, EditIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, SidebarLeftIcon, FavoriteIcon, CloseIcon, CopyIcon, RefreshIcon, ArrowDownIcon, CodeIcon } from './icons'
 
 function AgentActionButton({
   tooltip,
@@ -1113,6 +1113,16 @@ export default function AgentWorkspace() {
                                     onClick={() => setDetailTaskId(block.task.id)}
                                     onReuse={() => handleReuse(block.task)}
                                     onEditOutputs={() => editOutputs(block.task)}
+                                    onOpenOcr={async () => {
+                                      const imageId = block.task.outputImages?.[0]
+                                      if (!imageId) return
+                                      const imageDataUrl = await ensureImageCached(imageId)
+                                      if (!imageDataUrl) {
+                                        showToast('当前图片尚未准备好', 'error')
+                                        return
+                                      }
+                                      await openImageInOcrMode(imageId, imageDataUrl)
+                                    }}
                                     onDelete={() => setConfirmDialog({ title: '删除任务', message: '确定要删除这个任务吗？', action: () => removeTask(block.task) })}
                                   />
                                 </div>
@@ -1204,9 +1214,26 @@ export default function AgentWorkspace() {
                                } catch (err) {
                                  console.error(err);
                                  useStore.getState().showToast('下载失败', 'error');
+                                }
+                              }}>
+                                <DownloadIcon className="w-4 h-4" />
+                              </AgentActionButton>
+                            <AgentActionButton tooltip="本轮送入 OCR" className={`p-1.5 rounded-md transition-colors ${getRoundTasks(round ?? null, tasks).filter(Boolean).length > 0 ? 'text-gray-400 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-500/10' : 'text-gray-300 dark:text-gray-600 opacity-50 cursor-not-allowed'}`} disabled={getRoundTasks(round ?? null, tasks).filter(Boolean).length === 0} onClick={async () => {
+                               const firstTask = tasksForRound.find((task) => task.outputImages?.length)
+                               const imageId = firstTask?.outputImages?.[0]
+                               if (!imageId) return
+                               const imageDataUrl = await ensureImageCached(imageId)
+                               if (!imageDataUrl) {
+                                 showToast('当前图片尚未准备好', 'error')
+                                 return
+                               }
+                               try {
+                                 await openImageInOcrMode(imageId, imageDataUrl)
+                               } catch (err) {
+                                 showToast(`打开 OCR 模式失败：${err instanceof Error ? err.message : String(err)}`, 'error')
                                }
                              }}>
-                               <DownloadIcon className="w-4 h-4" />
+                               <CodeIcon className="w-4 h-4" />
                              </AgentActionButton>
                             <AgentActionButton tooltip="删除消息" className="p-1.5 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-md transition-colors" onClick={() => {
                               if (round) handleDeleteMessage(message, round);

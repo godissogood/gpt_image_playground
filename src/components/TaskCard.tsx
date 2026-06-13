@@ -12,6 +12,7 @@ interface Props {
   task: TaskRecord
   onReuse: () => void
   onEditOutputs: () => void
+  onOpenOcr?: () => void
   onDelete: () => void
   onClick: (e: React.MouseEvent | React.TouchEvent) => void
   isSelected?: boolean
@@ -61,6 +62,7 @@ export default function TaskCard({
   task,
   onReuse,
   onEditOutputs,
+  onOpenOcr,
   onDelete,
   onClick,
   isSelected,
@@ -719,6 +721,14 @@ export default function TaskCard({
                     d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
                   />
                 </svg>
+              </TaskActionButton>
+              <TaskActionButton
+                tooltip="打开 OCR"
+                onClick={onOpenOcr}
+                className="p-1.5 rounded-md hover:bg-purple-50 dark:hover:bg-purple-950/30 text-gray-400 hover:text-purple-500 transition disabled:opacity-30"
+                disabled={!task.outputImages?.length || !onOpenOcr}
+              >
+                <CodeIcon className="w-4 h-4" />
               </TaskActionButton>
               <TaskActionButton
                 tooltip="删除任务"
